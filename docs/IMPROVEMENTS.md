@@ -153,3 +153,25 @@ gh api repos/OWNER/REPO/branches/master/protection -X PUT --input body.json
 - Better board sync (webhook-based instead of polling)
 - Agent performance metrics (time-to-PR, review scores)
 - Multi-repo orchestration (ProblemRadar + Octopus parallel)
+
+## 🔧 Architecture Improvements (v2 — 2026-03-06)
+
+### Problem: Agents timing out at 80%+ rate
+
+### Root Causes Found:
+1. **SOUL.md says "MANDATORY: run builds before PR"** — agents spend 50-80% of time on build loops
+2. **Orchestrator prompt too large** (7,831 chars, 12 steps, 50+ API calls per run)
+3. **SOUL.md too large** (25KB for senior-dev) — too much context, less room for actual work
+4. **PowerShell syntax failures** — agents write bash, PowerShell rejects it, retry loops
+
+### Fixes Applied:
+1. **Removed "mandatory build" from all SOUL.md files** — "DO NOT run builds. Let CI handle it."
+2. **Orchestrator prompt: 7,831 → 1,000 chars** (87% reduction) — single query, no board sync
+3. **SOUL.md sizes: 25KB → 8.7KB** (65% reduction) — removed verbose examples, kept rules
+4. **Added "NO builds" to every spawn task template**
+
+### Expected Impact:
+- Agent completion rate: ~20% → 80%+
+- Avg task time: 15-30min → 5-10min
+- Orchestrator scan time: 5-10min → 1-2min
+- Token cost per task: -40% (less wasted on build loops)

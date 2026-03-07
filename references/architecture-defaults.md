@@ -42,16 +42,16 @@ Every project follows a **3-app monorepo** pattern:
 
 | Service | Default Port | Our Port |
 |---------|-------------|----------|
-| web app | 3000 | **4100** |
-| admin app | 3001 | **4200** |
-| api server | 3003 | **4300** |
-| PostgreSQL | 5432 | **5433** |
+| web app | 3000 | **4710** |
+| admin app | 3001 | **4720** |
+| api server | 3003 | **4730** |
+| PostgreSQL | 5432 | **5491** |
 
 Configure in each app's `package.json`:
 ```json
 {
   "scripts": {
-    "dev": "next dev -p 4100"
+    "dev": "next dev -p 4710"
   }
 }
 ```
@@ -64,11 +64,11 @@ For Hono API (`apps/api/package.json`):
   }
 }
 ```
-With port set in code: `serve({ fetch: app.fetch, port: 4300 })`
+With port set in code: `serve({ fetch: app.fetch, port: 4730 })`
 
 For PostgreSQL in `docker-compose.yml` or `.env`:
 ```env
-DATABASE_URL=postgresql://maestro:maestro@localhost:5433/maestro_kyc
+DATABASE_URL=postgresql://maestro:maestro@localhost:5491/maestro_kyc
 ```
 
 ### Rules

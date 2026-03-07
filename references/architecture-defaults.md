@@ -165,32 +165,137 @@ export const auth = betterAuth({
 resource:action
 ```
 
-Examples:
+### Default Scopes (seeded via DB seed)
+
+All scopes are seeded on first run. Admin can create new roles by picking from these scopes.
+
 ```
-users:read          — View user list
-users:write         — Create/edit users
-users:delete        — Delete users
-billing:read        — View invoices
-billing:manage      — Change plans, payment methods
-settings:read       — View org settings
-settings:write      — Change org settings
-kyc:submit          — Submit KYC verification
-kyc:review          — Review/approve KYC submissions
-kyc:admin           — Full KYC management
-reports:read        — View reports
-reports:export      — Export reports
-api:keys            — Manage API keys
+# ── Users ──
+users:read              View user list and profiles
+users:write             Create and edit users
+users:delete            Remove users from organization
+
+# ── Organizations ──
+orgs:read               View organization details
+orgs:write              Edit organization settings
+orgs:delete             Delete organization
+orgs:billing            Manage billing and subscription
+
+# ── Team / Members ──
+members:read            View team member list
+members:invite          Create and share invite links
+members:remove          Remove members from organization
+members:role            Change member roles
+
+# ── Roles & Permissions ──
+roles:read              View roles and their scopes
+roles:write             Create and edit custom roles
+roles:delete            Delete custom roles
+
+# ── KYC ──
+kyc:submit              Submit KYC verification
+kyc:read                View KYC submissions
+kyc:review              Review and approve/reject KYC
+kyc:admin               Full KYC management (config, templates)
+
+# ── Reports & Analytics ──
+reports:read            View reports and dashboards
+reports:export          Export reports (CSV, PDF)
+analytics:read          View analytics data
+
+# ── Settings ──
+settings:read           View organization settings
+settings:write          Change organization settings
+settings:integrations   Manage third-party integrations
+settings:api            Manage API keys and webhooks
+
+# ── Audit ──
+audit:read              View audit logs
 ```
+
+### Default Roles (seeded via DB seed)
+
+These system roles are created on seed. They CANNOT be deleted (isSystem=true) but admin can create additional custom roles.
+
+| Role | Scopes | System? |
+|------|--------|---------|
+| **Owner** | ALL scopes (wildcard `*`) | ✅ |
+| **Admin** | Everything except `orgs:delete`, `orgs:billing` | ✅ |
+| **Manager** | `users:read`, `members:*`, `roles:read`, `kyc:read`, `kyc:review`, `reports:*`, `analytics:read`, `settings:read`, `audit:read` | ✅ |
+| **Member** | `users:read`, `members:read`, `kyc:submit`, `kyc:read`, `reports:read`, `settings:read` | ✅ |
+| **Viewer** | `users:read`, `members:read`, `reports:read`, `analytics:read`, `settings:read` | ✅ |
+| **KYC Reviewer** | `users:read`, `kyc:read`, `kyc:review`, `reports:read` | ✅ |
+
+### DB Seed Script (`packages/db/seed.ts`)
+
+The seed script MUST:
+1. Insert all default scopes into `scopes` table (idempotent — skip if exists)
+2. Insert all default roles with their scope arrays (idempotent)
+3. Mark default roles as `isSystem: true`
+4. Be runnable multiple times safely (upsert pattern)
+
+```typescript
+// packages/db/seed.ts
+import { db } from './index'
+import { scopes, roles } from './schema'
+
+const DEFAULT_SCOPES = [
+  { key: 'users:read', label: 'View users', category: 'Users', description: 'View user list and profiles' },
+  { key: 'users:write', label: 'Create/edit users', category: 'Users', description: 'Create and edit users' },
+  { key: 'users:delete', label: 'Delete users', category: 'Users', description: 'Remove users from organization' },
+  // ... all scopes listed above
+]
+
+const DEFAULT_ROLES = [
+  { name: 'Owner', scopes: ['*'], isSystem: true, description: 'Full access to everything' },
+  { name: 'Admin', scopes: ['users:*', 'members:*', 'roles:*', 'kyc:*', 'reports:*', 'analytics:*', 'settings:*', 'audit:*'], isSystem: true, description: 'Organization administrator' },
+  { name: 'Manager', scopes: ['users:read', 'members:*', 'roles:read', 'kyc:read', 'kyc:review', 'reports:*', 'analytics:read', 'settings:read', 'audit:read'], isSystem: true, description: 'Team and KYC manager' },
+  { name: 'Member', scopes: ['users:read', 'members:read', 'kyc:submit', 'kyc:read', 'reports:read', 'settings:read'], isSystem: true, description: 'Standard team member' },
+  { name: 'Viewer', scopes: ['users:read', 'members:read', 'reports:read', 'analytics:read', 'settings:read'], isSystem: true, description: 'Read-only access' },
+  { name: 'KYC Reviewer', scopes: ['users:read', 'kyc:read', 'kyc:review', 'reports:read'], isSystem: true, description: 'Can review and approve KYC submissions' },
+]
+
+async function seed() {
+  // Upsert scopes
+  for (const scope of DEFAULT_SCOPES) {
+    await db.insert(scopes).values(scope).onConflictDoNothing({ target: scopes.key })
+  }
+  // Upsert roles (org-level roles are created per-org, system roles are global templates)
+  for (const role of DEFAULT_ROLES) {
+    await db.insert(roles).values(role).onConflictDoNothing({ target: [roles.name, roles.isSystem] })
+  }
+}
+```
+
+### Admin Role Management UI
+- Admin sees a list of all roles (system + custom)
+- System roles show a 🔒 badge — can view but not delete
+- "Create Role" button opens a form:
+  - Role name + description
+  - Scope picker: grouped by category (Users, KYC, Reports, etc.)
+  - Each scope is a toggle/checkbox with label + description
+  - Preview section: "This role can: View users, Submit KYC, View reports"
+- Edit custom roles: same form, pre-filled
+- Delete custom roles: confirmation dialog (only non-system roles)
+- Wildcard support: `*` means all scopes, `users:*` means all user scopes
 
 ### Database Schema
 ```
+Scope (reference table — seeded)
+  ├── id
+  ├── key            (unique, e.g., "kyc:review")
+  ├── label          (human-readable, e.g., "Review KYC")
+  ├── category       (grouping, e.g., "KYC", "Users", "Reports")
+  ├── description
+  └── createdAt
+
 Role
   ├── id
-  ├── orgId          → Organization
+  ├── orgId          → Organization (null for system/template roles)
   ├── name           (e.g., "KYC Reviewer")
   ├── description
-  ├── scopes         (string[] — list of scope keys)
-  ├── isSystem       (boolean — built-in roles can't be deleted)
+  ├── scopes         (string[] — list of scope keys, supports wildcards: "*", "users:*")
+  ├── isSystem       (boolean — system roles can't be deleted or renamed)
   ├── createdAt
   └── updatedAt
 
@@ -198,8 +303,15 @@ OrgMembership
   ├── userId
   ├── orgId
   ├── roleId         → Role
-  └── customScopes   (string[] — additional scopes beyond role)
+  └── customScopes   (string[] — additional scopes beyond role, optional)
 ```
+
+### Scope Resolution Logic
+When checking permissions, resolve scopes in this order:
+1. Get role scopes from `role.scopes[]`
+2. Add `membership.customScopes[]` (if any)
+3. Resolve wildcards: `*` = all, `users:*` = all user scopes
+4. Check if requested scope is in the resolved set
 
 ### Admin UI for Role Management
 - Admin can create custom roles by toggling scopes on/off

@@ -33,7 +33,17 @@ Spin up an autonomous software development team that collaborates through GitHub
 Required from user:
 - **GitHub repo** (owner/repo) — existing or new
 - **Product vision** — what the product does (1-2 paragraphs)
-- **Tech stack** — framework, DB, infra (or let agents decide)
+- **Tech stack** — framework, DB, infra (defaults: Next.js 15 monorepo, Drizzle, PostgreSQL, Hono, Better Auth)
+
+### Default Architecture (applied automatically)
+All projects get these defaults unless overridden (see `references/architecture-defaults.md`):
+- **3-app monorepo**: web (customer app), admin (dashboard), api (Hono backend)
+- **Better Auth**: Google OAuth, session-based authentication
+- **Multi-tenant**: One account → multiple organizations
+- **RBAC**: Scopes + Roles system (admin composes roles by picking scopes)
+- **Team invitations**: Shareable link-based invites (no email required)
+- **Drizzle ORM + PostgreSQL**: Schema-as-code, soft deletes, UUIDs
+- **Frontend Design Skill**: Distinctive, non-generic UI (see UI agent soul template)
 
 ### 2. Run setup
 

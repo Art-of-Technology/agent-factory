@@ -31,17 +31,52 @@ Every project follows a **3-app monorepo** pattern:
 
 ### App Responsibilities
 
-| App | Purpose | URL Pattern |
-|-----|---------|-------------|
-| **web** | Customer-facing product UI, public pages, KYC flows, onboarding | `app.{domain}` |
-| **admin** | Internal admin dashboard, user management, org management, analytics, config | `admin.{domain}` |
-| **api** | REST API, webhooks, background jobs, auth endpoints, file uploads | `api.{domain}` |
+| App | Purpose | URL Pattern | Dev Port |
+|-----|---------|-------------|----------|
+| **web** | Customer-facing product UI, public pages, KYC flows, onboarding | `app.{domain}` | `4100` |
+| **admin** | Internal admin dashboard, user management, org management, analytics, config | `admin.{domain}` | `4200` |
+| **api** | REST API, webhooks, background jobs, auth endpoints, file uploads | `api.{domain}` | `4300` |
+
+### Port Configuration (IMPORTANT — avoid conflicts)
+**DO NOT use default ports** (3000, 3001, 3002, 5432) — they are used by production services.
+
+| Service | Default Port | Our Port |
+|---------|-------------|----------|
+| web app | 3000 | **4100** |
+| admin app | 3001 | **4200** |
+| api server | 3003 | **4300** |
+| PostgreSQL | 5432 | **5433** |
+
+Configure in each app's `package.json`:
+```json
+{
+  "scripts": {
+    "dev": "next dev -p 4100"
+  }
+}
+```
+
+For Hono API (`apps/api/package.json`):
+```json
+{
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
+  }
+}
+```
+With port set in code: `serve({ fetch: app.fetch, port: 4300 })`
+
+For PostgreSQL in `docker-compose.yml` or `.env`:
+```env
+DATABASE_URL=postgresql://maestro:maestro@localhost:5433/maestro_kyc
+```
 
 ### Rules
 - Apps import from `packages/` — never from other apps
 - Each app has its own `package.json` and can be deployed independently
 - Shared business logic lives in `packages/shared`
 - Database access ONLY through `packages/db` (never raw SQL in apps)
+- **NEVER use default ports** — always use the configured dev ports above
 
 ---
 

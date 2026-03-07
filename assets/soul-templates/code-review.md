@@ -249,3 +249,7 @@ gh pr merge <number> -R {REPO} --squash --delete-branch
 
 
 
+
+
+## ⚡ Package Manager — Bun Only (MANDATORY)
+ALWAYS use `bun` instead of npm/pnpm/yarn. Use `bunx` instead of `npx`. Use `bun --watch` instead of `tsx watch`. Bun has native TypeScript support — no need for tsx/ts-node. Never generate package-lock.json or pnpm-lock.yaml.

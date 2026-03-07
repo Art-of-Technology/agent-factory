@@ -4,6 +4,52 @@ These are the **default architectural decisions** for all projects bootstrapped 
 
 ---
 
+## Package Manager — Bun (MANDATORY)
+
+**Always use `bun`** as the package manager and runtime. Never use npm, pnpm, yarn, or npx.
+
+| Instead of | Use |
+|---|---|
+| `npm install` / `pnpm install` | `bun install` |
+| `npm run dev` | `bun run dev` |
+| `npx` / `pnpx` | `bunx` |
+| `node script.js` | `bun script.js` |
+| `tsx watch src/index.ts` | `bun --watch src/index.ts` |
+| `ts-node` / `tsx` | `bun` (native TS support) |
+
+### Monorepo Workspaces
+Use bun workspaces in root `package.json` (NOT pnpm-workspace.yaml):
+```json
+{
+  "workspaces": ["apps/*", "packages/*", "tooling/*"]
+}
+```
+
+### Lock File
+- Use `bun.lockb` — never commit `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock`
+- Add those to `.gitignore`
+
+### Scripts in package.json
+```json
+{
+  "scripts": {
+    "dev": "bun run --filter './apps/*' dev",
+    "build": "bun run --filter './apps/*' build",
+    "db:generate": "bunx drizzle-kit generate",
+    "db:migrate": "bunx drizzle-kit migrate",
+    "db:seed": "bun packages/db/src/seed.ts"
+  }
+}
+```
+
+### Why Bun
+- Fastest JS runtime + package manager
+- Native TypeScript support (no tsx/ts-node needed)
+- Compatible with Node.js APIs
+- Faster installs, faster builds, faster everything
+
+---
+
 ## App Separation (Monorepo — Turborepo)
 
 Every project follows a **3-app monorepo** pattern:
@@ -60,7 +106,7 @@ For Hono API (`apps/api/package.json`):
 ```json
 {
   "scripts": {
-    "dev": "tsx watch src/index.ts"
+    "dev": "bun --watch src/index.ts"
   }
 }
 ```

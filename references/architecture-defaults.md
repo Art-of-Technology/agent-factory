@@ -514,3 +514,19 @@ apps/api/
 - Auth middleware on all routes except public ones
 - Org middleware injects `orgId` into context
 - RBAC middleware checks scopes per-route
+
+---
+
+## Development Skills (Auto-deployed)
+
+Agent Factory deploys these skill reference files to every project. Agents MUST read their assigned skills before writing code.
+
+| Skill | Purpose | Used By |
+|-------|---------|---------|
+| `skills/nextjs-expert/` | Next.js 15 App Router, Server Components, data fetching, caching | UI, Senior Dev, API, Code Review |
+| `skills/react-expert/` | React 18+ hooks, state management, performance, Server Components | UI, Senior Dev, Code Review |
+| `skills/shadcn-ui/` | shadcn/ui components, Tailwind CSS, form handling, theming | UI |
+| `skills/api-security-best-practices/` | Auth, input validation, rate limiting, OWASP Top 10 | API, Senior Dev, DB, Security, Code Review |
+| `skills/testing-best-practices/` | Test patterns, coverage, mocking, integration tests | QA, Code Review |
+
+Skills are copied to the project's `skills/` directory during setup. Agents reference them via relative path.

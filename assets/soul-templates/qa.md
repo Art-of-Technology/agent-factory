@@ -78,3 +78,7 @@ gh issue edit <number> -R {REPO} --remove-label "needs-test" --add-label "tests-
 
 ## ⚡ Package Manager — Bun Only (MANDATORY)
 ALWAYS use `bun` instead of npm/pnpm/yarn. Use `bunx` instead of `npx`. Use `bun --watch` instead of `tsx watch`. Bun has native TypeScript support — no need for tsx/ts-node. Never generate package-lock.json or pnpm-lock.yaml.
+
+## 📚 Required Skills (MUST READ before coding)
+Before writing ANY code, read these skill files for best practices:
+- `skills/testing-best-practices/SKILL.md` — Test patterns, coverage, mocking, integration tests

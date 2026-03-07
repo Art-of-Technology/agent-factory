@@ -253,3 +253,10 @@ gh pr merge <number> -R {REPO} --squash --delete-branch
 
 ## ⚡ Package Manager — Bun Only (MANDATORY)
 ALWAYS use `bun` instead of npm/pnpm/yarn. Use `bunx` instead of `npx`. Use `bun --watch` instead of `tsx watch`. Bun has native TypeScript support — no need for tsx/ts-node. Never generate package-lock.json or pnpm-lock.yaml.
+
+## 📚 Required Skills (MUST READ before reviewing)
+Before reviewing ANY code, read these skill files to know what good code looks like:
+- `skills/nextjs-expert/SKILL.md` — Next.js 15 best practices
+- `skills/react-expert/SKILL.md` — React patterns and anti-patterns
+- `skills/api-security-best-practices/SKILL.md` — Security best practices to check for
+- `skills/testing-best-practices/SKILL.md` — Test coverage expectations

@@ -73,7 +73,7 @@ Specialized agent workspace for project: $Repo
 
 # --- Step 2: Update openclaw.json ---
 Write-Host "`n⚙️ Updating openclaw.json..." -ForegroundColor Yellow
-$config = Get-Content $configPath -Raw | ConvertFrom-Json -Depth 20
+$config = Get-Content $configPath -Raw | ConvertFrom-Json
 
 if (-not $config.agents) { $config | Add-Member -NotePropertyName "agents" -NotePropertyValue @{} -Force }
 if (-not $config.agents.defaults) { $config.agents | Add-Member -NotePropertyName "defaults" -NotePropertyValue @{} -Force }
@@ -97,7 +97,9 @@ foreach ($agent in $agents) {
 }
 $config.agents | Add-Member -NotePropertyName "list" -NotePropertyValue $agentsList -Force
 
-$config | ConvertTo-Json -Depth 20 | Set-Content $configPath -Encoding UTF8
+# Use -Depth 10 for nested config (pwsh 7+), fall back to default for PS5
+try { $config | ConvertTo-Json -Depth 10 | Set-Content $configPath -Encoding UTF8 }
+catch { $config | ConvertTo-Json | Set-Content $configPath -Encoding UTF8 }
 Write-Host "  ✅ Config updated with $($agents.Count) agents" -ForegroundColor Green
 
 # --- Step 3: Create GitHub labels ---
@@ -130,7 +132,8 @@ $labels = @(
     "blocker,B60205,Blocked by dependency",
     "priority-high,B60205,High priority",
     "priority-medium,FBCA04,Medium priority",
-    "priority-low,0E8A16,Low priority"
+    "priority-low,0E8A16,Low priority",
+    "needs-rebase,FFA500,PR needs rebase on main"
 )
 foreach ($l in $labels) {
     $parts = $l.Split(",")
@@ -157,7 +160,7 @@ $statusField = $fieldsJson.fields | Where-Object { $_.name -eq "Status" }
 $statusFieldId = $statusField.id
 $inProgressOpt = ($statusField.options | Where-Object { $_.name -eq "In Progress" }).id
 $doneOpt = ($statusField.options | Where-Object { $_.name -eq "Done" }).id
-Write-Host "  ✅ Status field: $statusFieldId (InProgress=$inProgressOpt, Done=$doneOpt)" -ForegroundColor Green
+Write-Host ("  ✅ Status field: {0} (InProgress={1}, Done={2})" -f $statusFieldId, $inProgressOpt, $doneOpt) -ForegroundColor Green
 
 
 # --- Step 4c: Enable branch protection ---

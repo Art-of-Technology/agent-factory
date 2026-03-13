@@ -1,5 +1,9 @@
 # Workflow Labels
 
+> ⚠️ **LESSON LEARNED:** Keep labels minimal. In practice, only 4 states matter:
+> `open` → `ready` → `pr-open` → `merged`
+> The labels below are available but most are noise. See `workflow-rules.md` for details.
+
 ## Issue Types
 | Label | Color | Description |
 |---|---|---|

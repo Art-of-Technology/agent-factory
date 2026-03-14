@@ -13,9 +13,10 @@
  *   delete   --collection <name>                 Delete a collection
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync } from 'fs';
 import { join, relative, extname } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
+import { execFileSync } from 'child_process';
 import OpenAI from 'openai';
 
 const CONFIG_DIR  = join(homedir(), '.af');
@@ -37,10 +38,83 @@ function saveConfig(cfg) {
 function requireConfig() {
   const cfg = loadConfig();
   if (!cfg?.qdrant) {
-    console.error('Not configured. Run: af rag config --qdrant <URL> --openai-key <KEY>');
+    console.error('Not configured. Run: af auth login');
     process.exit(1);
   }
   return cfg;
+}
+
+// ── Auth commands ─────────────────────────────────────────────────────────────
+
+async function cmdAuthLogin(args) {
+  const get = (flag) => { const i = args.indexOf(flag); return i !== -1 && args[i + 1] ? args[i + 1] : null; };
+
+  const qdrantUrl   = get('--qdrant');
+  const openaiKey   = get('--openai-key');
+  const provider    = get('--provider');
+  const ollamaUrl   = get('--ollama-url');
+
+  if (!qdrantUrl && !openaiKey && !provider && !ollamaUrl) {
+    console.log('Usage: af auth login --qdrant <URL> --openai-key <KEY> [--provider openai|ollama]');
+    console.log('');
+    console.log('Options:');
+    console.log('  --qdrant      <URL>           Qdrant REST API URL (e.g. http://10.34.9.237:6333)');
+    console.log('  --openai-key  <KEY>           OpenAI API key (sk-...)');
+    console.log('  --provider    openai|ollama   Embedding provider (default: openai)');
+    console.log('  --ollama-url  <URL>           Ollama URL if using ollama provider');
+    return;
+  }
+
+  const existing = loadConfig() || {};
+  const updated  = {
+    ...existing,
+    ...(qdrantUrl  ? { qdrant: qdrantUrl }  : {}),
+    ...(openaiKey  ? { openaiKey }          : {}),
+    ...(provider   ? { provider }           : {}),
+    ...(ollamaUrl  ? { ollamaUrl }          : {}),
+  };
+
+  // Verify Qdrant
+  if (qdrantUrl) {
+    try {
+      const res = await fetch(qdrantUrl, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      console.log(`✅ Qdrant reachable at ${qdrantUrl}`);
+    } catch (err) {
+      console.error(`⚠️  Cannot reach Qdrant at ${qdrantUrl}: ${err.message}`);
+    }
+  }
+
+  saveConfig(updated);
+  console.log(`✅ Credentials saved to ${CONFIG_FILE}`);
+}
+
+async function cmdAuthWhoami() {
+  const cfg = loadConfig();
+  if (!cfg) {
+    console.log('Not logged in. Run: af auth login --qdrant <URL> --openai-key <KEY>');
+    return;
+  }
+  console.log('af auth — current config\n');
+  console.log(`  Qdrant URL:    ${cfg.qdrant || '(not set)'}`);
+  console.log(`  Provider:      ${cfg.provider || 'openai'}`);
+  if (cfg.openaiKey)   console.log(`  OpenAI key:    ${cfg.openaiKey.slice(0, 8)}...${cfg.openaiKey.slice(-4)}`);
+  if (cfg.ollamaUrl)   console.log(`  Ollama URL:    ${cfg.ollamaUrl}`);
+  if (cfg.ollamaModel) console.log(`  Ollama model:  ${cfg.ollamaModel}`);
+  if (cfg.openaiModel) console.log(`  OpenAI model:  ${cfg.openaiModel}`);
+  console.log(`  Config file:   ${CONFIG_FILE}`);
+
+  // Live Qdrant check
+  if (cfg.qdrant) {
+    try {
+      const res = await fetch(cfg.qdrant, { signal: AbortSignal.timeout(4000) });
+      const cols = await fetch(`${cfg.qdrant}/collections`, { signal: AbortSignal.timeout(4000) }).then(r => r.json());
+      const count = cols.result?.collections?.length ?? 0;
+      console.log(`\n  Qdrant:        ✅ online (${count} collection${count !== 1 ? 's' : ''})`);
+    } catch {
+      console.log(`\n  Qdrant:        ❌ unreachable`);
+    }
+  }
 }
 
 // ── Embedding ────────────────────────────────────────────────────────────────
@@ -234,6 +308,16 @@ async function cmdConfig(args) {
   console.log(`✅ Config saved to ${CONFIG_FILE}`);
 }
 
+function isGitUrl(str) {
+  return /^https?:\/\//.test(str) || /^git@/.test(str) || /^github\.com\//.test(str);
+}
+
+function inferCollection(pathOrUrl) {
+  // Extract repo name from URL or path
+  const name = pathOrUrl.replace(/\.git$/, '').split('/').pop() || 'codebase';
+  return name.toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+}
+
 async function cmdIndex(args) {
   const cfg = requireConfig();
   const get = (flag) => {
@@ -241,16 +325,33 @@ async function cmdIndex(args) {
     return i !== -1 && args[i + 1] ? args[i + 1] : null;
   };
 
-  const repoPath   = get('--repo') || '.';
-  const collection = get('--collection') || 'codebase';
+  const pathArg    = get('--path') || get('--repo') || '.';
   const provider   = get('--provider') || cfg.provider || 'openai';
   const batchSize  = parseInt(get('--batch') || (provider === 'ollama' ? '10' : '50'), 10);
   const effectiveCfg = { ...cfg, provider };
 
-  if (!existsSync(repoPath)) {
-    console.error(`❌ Repo path not found: ${repoPath}`);
+  let repoPath = pathArg;
+  let clonedTmp = null;
+
+  // Support GitHub URLs — clone to temp dir
+  if (isGitUrl(pathArg)) {
+    const url = pathArg.startsWith('github.com/') ? `https://${pathArg}` : pathArg;
+    clonedTmp = join(tmpdir(), `af-index-${Date.now()}`);
+    console.log(`📥 Cloning ${url}...`);
+    try {
+      execFileSync('git', ['clone', '--depth', '1', url, clonedTmp], { stdio: 'pipe' });
+      repoPath = clonedTmp;
+      console.log(`✅ Cloned to ${clonedTmp}\n`);
+    } catch (err) {
+      console.error(`❌ Clone failed: ${err.stderr?.toString().trim() || err.message}`);
+      process.exit(1);
+    }
+  } else if (!existsSync(repoPath)) {
+    console.error(`❌ Path not found: ${repoPath}`);
     process.exit(1);
   }
+
+  const collection = get('--collection') || inferCollection(pathArg);
 
   const dims = vectorSize(effectiveCfg);
   console.log(`🔧 Provider: ${provider} | Dims: ${dims}`);
@@ -323,6 +424,11 @@ async function cmdIndex(args) {
   } else {
     console.log(`⚠️  Completed with ${failed}/${totalBatches} failed batches`);
     process.exitCode = 1;
+  }
+
+  // Cleanup temp clone
+  if (clonedTmp && existsSync(clonedTmp)) {
+    rmSync(clonedTmp, { recursive: true, force: true });
   }
 }
 
@@ -415,59 +521,67 @@ const cmdArgs = args.slice(2);
 const HELP = `
 af — Agent Factory CLI
 
-Usage: af <group> <command> [options]
+Usage: af <group|command> [subcommand] [options]
 
-Groups:
-  rag    Semantic code search (Qdrant + OpenAI/Ollama)
+Auth:
+  af auth login    --qdrant <URL> --openai-key <KEY>   Save credentials
+  af auth whoami                                        Show current config
 
-Run 'af rag --help' for rag commands.
+Indexing:
+  af index   --path <local-path|github-url>            Index a repository
+               [--collection <name>]  [--provider openai|ollama]
+
+RAG Search:
+  af rag search      <query> --collection <name>       Semantic search
+  af rag collections                                   List indexed collections
+  af rag delete      --collection <name>               Delete a collection
 
 Install:
   npm install -g Art-of-Technology/agent-factory
-`;
-
-const RAG_HELP = `
-af rag — Semantic code search for AI agents
-
-Setup:
-  af rag config --qdrant <URL> --openai-key <KEY>    Save connection settings
-  af rag config                                       Show current config
-
-Commands:
-  af rag index    --repo <path> --collection <name>   Index a repository
-                    [--provider openai|ollama]
-                    [--batch <n>]
-  af rag search   <query> --collection <name>         Semantic search
-                    [--top <n>]  [--json]
-  af rag collections                                  List indexed collections
-  af rag delete   --collection <name>                 Delete a collection
 
 Examples:
-  af rag config --qdrant http://10.34.9.237:6333 --openai-key sk-...
-  af rag index --repo /home/user/myproject --collection myproject
-  af rag search "how is auth handled" --collection myproject --top 10
-  af rag search "stripe webhook" --collection openclaw --json
+  af auth login --qdrant http://10.34.9.237:6333 --openai-key sk-...
+  af auth whoami
+  af index --path https://github.com/Art-of-Technology/maestro-fraud
+  af index --path /home/user/myproject --collection myproject
+  af rag search "how is risk score calculated" --collection maestro-fraud
+  af rag search "stripe webhook" --collection openclaw --top 10 --json
   af rag collections
-  af rag delete --collection old-project
 `;
 
 const ragCommands = {
-  config:      cmdConfig,
-  index:       cmdIndex,
   search:      cmdSearch,
   collections: cmdCollections,
   delete:      cmdDelete,
 };
 
+const authCommands = {
+  login:  cmdAuthLogin,
+  whoami: cmdAuthWhoami,
+};
+
 if (!group || group === '--help' || group === '-h') {
   console.log(HELP);
+} else if (group === 'auth') {
+  const handler = authCommands[cmd];
+  if (!handler) {
+    console.error(`Unknown auth command: ${cmd || '(none)'}\nUsage: af auth login|whoami`);
+    process.exitCode = 1;
+  } else {
+    try { await handler(cmdArgs); }
+    catch (err) { console.error(`Error: ${err.message}`); process.exitCode = 1; }
+  }
+} else if (group === 'index') {
+  // af index is a top-level shortcut (args start from cmd position)
+  try { await cmdIndex([cmd, ...cmdArgs].filter(Boolean)); }
+  catch (err) { console.error(`Error: ${err.message}`); process.exitCode = 1; }
 } else if (group === 'rag') {
   if (!cmd || cmd === '--help' || cmd === '-h') {
-    console.log(RAG_HELP);
+    console.log(HELP);
   } else {
     const handler = ragCommands[cmd];
     if (!handler) {
-      console.error(`Unknown rag command: ${cmd}\nRun 'af rag --help' for usage.`);
+      console.error(`Unknown rag command: ${cmd}\nRun 'af --help' for usage.`);
       process.exitCode = 1;
     } else {
       try { await handler(cmdArgs); }

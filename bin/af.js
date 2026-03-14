@@ -6,11 +6,10 @@
  * Index any git repository into Qdrant and query it with natural language.
  *
  * Commands:
- *   config   --qdrant <URL> --openai-key <KEY>   Save connection settings
- *   index    --repo <path> --collection <name>   Index a repository
- *   search   <query> --collection <name>         Semantic search
- *   collections                                  List all indexed collections
- *   delete   --collection <name>                 Delete a collection
+ *   auth     login|whoami                            Manage credentials
+ *   config   --qdrant <URL> --openai-key <KEY>       Save connection settings
+ *   index    --repo <path> --collection <name>       Index a repository
+ *   rag      search|ask|collections|delete           RAG operations
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, rmSync } from 'fs';
@@ -53,15 +52,17 @@ async function cmdAuthLogin(args) {
   const openaiKey   = get('--openai-key');
   const provider    = get('--provider');
   const ollamaUrl   = get('--ollama-url');
+  const cohereKey   = get('--cohere-key');
 
-  if (!qdrantUrl && !openaiKey && !provider && !ollamaUrl) {
-    console.log('Usage: af auth login --qdrant <URL> --openai-key <KEY> [--provider openai|ollama]');
+  if (!qdrantUrl && !openaiKey && !provider && !ollamaUrl && !cohereKey) {
+    console.log('Usage: af auth login --qdrant <URL> --openai-key <KEY> [options]');
     console.log('');
     console.log('Options:');
     console.log('  --qdrant      <URL>           Qdrant REST API URL (e.g. http://10.34.9.237:6333)');
     console.log('  --openai-key  <KEY>           OpenAI API key (sk-...)');
     console.log('  --provider    openai|ollama   Embedding provider (default: openai)');
     console.log('  --ollama-url  <URL>           Ollama URL if using ollama provider');
+    console.log('  --cohere-key  <KEY>           Cohere API key for reranking');
     return;
   }
 
@@ -72,6 +73,7 @@ async function cmdAuthLogin(args) {
     ...(openaiKey  ? { openaiKey }          : {}),
     ...(provider   ? { provider }           : {}),
     ...(ollamaUrl  ? { ollamaUrl }          : {}),
+    ...(cohereKey  ? { cohereKey }          : {}),
   };
 
   // Verify Qdrant
@@ -102,12 +104,13 @@ async function cmdAuthWhoami() {
   if (cfg.ollamaUrl)   console.log(`  Ollama URL:    ${cfg.ollamaUrl}`);
   if (cfg.ollamaModel) console.log(`  Ollama model:  ${cfg.ollamaModel}`);
   if (cfg.openaiModel) console.log(`  OpenAI model:  ${cfg.openaiModel}`);
+  if (cfg.cohereKey)   console.log(`  Cohere key:    ${cfg.cohereKey.slice(0, 8)}...${cfg.cohereKey.slice(-4)}`);
   console.log(`  Config file:   ${CONFIG_FILE}`);
 
   // Live Qdrant check
   if (cfg.qdrant) {
     try {
-      const res = await fetch(cfg.qdrant, { signal: AbortSignal.timeout(4000) });
+      await fetch(cfg.qdrant, { signal: AbortSignal.timeout(4000) });
       const cols = await fetch(`${cfg.qdrant}/collections`, { signal: AbortSignal.timeout(4000) }).then(r => r.json());
       const count = cols.result?.collections?.length ?? 0;
       console.log(`\n  Qdrant:        ✅ online (${count} collection${count !== 1 ? 's' : ''})`);
@@ -157,6 +160,97 @@ function vectorSize(cfg) {
   if ((cfg.provider || 'openai') === 'ollama') return 768;
   const m = cfg.openaiModel || 'text-embedding-3-large';
   return m.includes('large') ? 3072 : 1536;
+}
+
+// ── BM25 Sparse Vector ───────────────────────────────────────────────────────
+
+/**
+ * Compute a simple BM25-inspired sparse vector for a query string.
+ * Returns { indices: int[], values: float[] } suitable for Qdrant sparse vectors.
+ */
+function computeSparseBM25(text) {
+  // Tokenize: lowercase, split on non-word chars, filter short/stopwords
+  const STOPWORDS = new Set(['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all',
+    'can', 'her', 'was', 'one', 'our', 'out', 'use', 'how', 'this', 'that', 'with',
+    'from', 'they', 'will', 'have', 'been', 'more', 'also', 'into', 'its', 'than']);
+
+  const tokens = text.toLowerCase().split(/\W+/).filter(t => t.length > 2 && !STOPWORDS.has(t));
+  if (tokens.length === 0) return { indices: [], values: [] };
+
+  // Count term frequencies
+  const tf = {};
+  for (const tok of tokens) {
+    tf[tok] = (tf[tok] || 0) + 1;
+  }
+
+  // Simple djb2-style hash → map to index space [0, 65535]
+  function termHash(term) {
+    let h = 5381;
+    for (let i = 0; i < term.length; i++) {
+      h = ((h << 5) + h + term.charCodeAt(i)) >>> 0;
+    }
+    return h % 65536;
+  }
+
+  // Deduplicate: if two terms hash to same index, keep the one with higher TF
+  const indexMap = {};
+  for (const [term, count] of Object.entries(tf)) {
+    const idx = termHash(term);
+    const score = count / tokens.length; // normalized TF
+    if (!indexMap[idx] || indexMap[idx] < score) {
+      indexMap[idx] = score;
+    }
+  }
+
+  const indices = Object.keys(indexMap).map(Number);
+  const values  = indices.map(i => indexMap[i]);
+  return { indices, values };
+}
+
+// ── Reranking (Cohere) ───────────────────────────────────────────────────────
+
+/**
+ * Rerank results using Cohere Rerank API.
+ * Returns top `topK` results sorted by relevance.
+ */
+async function cohereRerank(query, results, topK, cohereKey) {
+  if (!cohereKey || results.length === 0) return results.slice(0, topK);
+
+  try {
+    const documents = results.map(r =>
+      `File: ${r.file} (L${r.lines})\n${r.content.slice(0, 512)}`
+    );
+
+    const res = await fetch('https://api.cohere.com/v2/rerank', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cohereKey}`,
+      },
+      body: JSON.stringify({
+        model: 'rerank-v3.5',
+        query,
+        documents,
+        top_n: topK,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      console.error(`⚠️  Cohere rerank failed (HTTP ${res.status}): ${txt.slice(0, 200)}`);
+      return results.slice(0, topK);
+    }
+
+    const data = await res.json();
+    return (data.results || []).map(r => ({
+      ...results[r.index],
+      score: r.relevance_score,
+    }));
+  } catch (err) {
+    console.error(`⚠️  Cohere rerank error: ${err.message}`);
+    return results.slice(0, topK);
+  }
 }
 
 // ── File scanning & chunking ─────────────────────────────────────────────────
@@ -276,6 +370,7 @@ async function cmdConfig(args) {
       if (cfg.openaiModel) console.log(`  OpenAI model:  ${cfg.openaiModel}`);
       if (cfg.ollamaUrl)   console.log(`  Ollama URL:    ${cfg.ollamaUrl}`);
       if (cfg.ollamaModel) console.log(`  Ollama model:  ${cfg.ollamaModel}`);
+      if (cfg.cohereKey)   console.log(`  Cohere key:    ${cfg.cohereKey.slice(0, 8)}...`);
       console.log(`  Config file:   ${CONFIG_FILE}`);
     }
     return;
@@ -432,48 +527,98 @@ async function cmdIndex(args) {
   }
 }
 
-async function cmdSearch(args) {
-  const cfg = requireConfig();
-  const topIdx = args.indexOf('--top');
-  const topK   = topIdx !== -1 && args[topIdx + 1] ? parseInt(args[topIdx + 1], 10) : 5;
-  const colIdx = args.indexOf('--collection');
-  const collection = colIdx !== -1 && args[colIdx + 1] ? args[colIdx + 1] : 'codebase';
-  const jsonOut = args.includes('--json');
-
-  const query = args.filter((a, i) => {
-    if (a.startsWith('--')) return false;
-    if (i > 0 && (args[i - 1] === '--top' || args[i - 1] === '--collection')) return false;
-    return true;
-  }).join(' ');
-
-  if (!query) {
-    console.error('Usage: af rag search <query> [--collection <name>] [--top N] [--json]');
-    process.exit(1);
-  }
+/**
+ * Core search function — returns result array.
+ * Used by both cmdSearch and cmdRagAsk.
+ */
+async function performSearch(query, collection, topK, cfg, { hybrid = false, rerank = false } = {}) {
+  const fetchK = rerank && cfg.cohereKey ? topK * 4 : topK;
 
   const [queryVec] = await embed([query], cfg);
-  const res = await qdrant(cfg, 'POST', `/collections/${collection}/points/search`, {
-    vector: queryVec, limit: topK, with_payload: true,
-  });
 
-  const results = res.result.map(hit => ({
-    score:   hit.score,
-    file:    hit.payload.file_path,
-    lines:   `${hit.payload.start_line}-${hit.payload.end_line}`,
-    type:    hit.payload.chunk_type,
-    content: hit.payload.content,
-  }));
+  let results = null;
 
+  // ── Hybrid search via Qdrant query API ──────────────────────────────────────
+  if (hybrid) {
+    const sparse = computeSparseBM25(query);
+    try {
+      // Try named-vector hybrid using the /query endpoint (RRF fusion)
+      const res = await qdrant(cfg, 'POST', `/collections/${collection}/points/query`, {
+        prefetch: [
+          {
+            query: queryVec,
+            using: 'text-dense',
+            limit: fetchK * 2,
+          },
+          {
+            query: { indices: sparse.indices, values: sparse.values },
+            using: 'text-sparse',
+            limit: fetchK * 2,
+          },
+        ],
+        query: { fusion: 'rrf' },
+        limit: fetchK,
+        with_payload: true,
+      });
+      results = (res.result?.points || res.result || []).map(hit => ({
+        score:   hit.score,
+        file:    hit.payload.file_path,
+        lines:   `${hit.payload.start_line}-${hit.payload.end_line}`,
+        type:    hit.payload.chunk_type,
+        content: hit.payload.content,
+      }));
+    } catch (hybridErr) {
+      // Named vectors not available — try query API with dense only (RRF of one)
+      try {
+        const res = await qdrant(cfg, 'POST', `/collections/${collection}/points/query`, {
+          query: queryVec,
+          limit: fetchK,
+          with_payload: true,
+        });
+        results = (res.result?.points || res.result || []).map(hit => ({
+          score:   hit.score,
+          file:    hit.payload.file_path,
+          lines:   `${hit.payload.start_line}-${hit.payload.end_line}`,
+          type:    hit.payload.chunk_type,
+          content: hit.payload.content,
+        }));
+      } catch {
+        // Fall back to classic search endpoint
+        results = null;
+      }
+    }
+  }
+
+  // ── Classic vector search (fallback or default) ──────────────────────────
+  if (results === null) {
+    const res = await qdrant(cfg, 'POST', `/collections/${collection}/points/search`, {
+      vector: queryVec, limit: fetchK, with_payload: true,
+    });
+    results = (res.result || []).map(hit => ({
+      score:   hit.score,
+      file:    hit.payload.file_path,
+      lines:   `${hit.payload.start_line}-${hit.payload.end_line}`,
+      type:    hit.payload.chunk_type,
+      content: hit.payload.content,
+    }));
+  }
+
+  // ── Cohere reranking ───────────────────────────────────────────────────────
+  if (rerank && cfg.cohereKey && results.length > 0) {
+    results = await cohereRerank(query, results, topK, cfg.cohereKey);
+  } else {
+    results = results.slice(0, topK);
+  }
+
+  return results;
+}
+
+/** Print results in standard format */
+function printResults(results) {
   if (results.length === 0) {
     console.log('No results found.');
     return;
   }
-
-  if (jsonOut) {
-    console.log(JSON.stringify(results, null, 2));
-    return;
-  }
-
   for (const r of results) {
     console.log(`━━━ ${r.file} (L${r.lines}) [${r.type}] score: ${r.score.toFixed(3)} ━━━`);
     const preview = r.content.split('\n').slice(0, 12).join('\n');
@@ -481,6 +626,148 @@ async function cmdSearch(args) {
     if (r.content.split('\n').length > 12) console.log('  ...');
     console.log();
   }
+}
+
+async function cmdSearch(args) {
+  const cfg = requireConfig();
+
+  const get = (flag) => {
+    const i = args.indexOf(flag);
+    return i !== -1 && args[i + 1] ? args[i + 1] : null;
+  };
+
+  const topK       = parseInt(get('--top') || '5', 10);
+  const collection = get('--collection') || 'codebase';
+  const jsonOut    = args.includes('--json');
+  const hybrid     = args.includes('--hybrid');
+  const rerank     = args.includes('--rerank');
+
+  const query = args.filter((a, i) => {
+    if (a.startsWith('--')) return false;
+    if (i > 0 && ['--top', '--collection'].includes(args[i - 1])) return false;
+    return true;
+  }).join(' ');
+
+  if (!query) {
+    console.error('Usage: af rag search <query> [--collection <name>] [--top N] [--hybrid] [--rerank] [--json]');
+    process.exit(1);
+  }
+
+  if (hybrid) process.stderr.write('🔀 Hybrid search (dense + BM25)...\n');
+  if (rerank && cfg.cohereKey) process.stderr.write('🏆 Reranking with Cohere...\n');
+
+  const results = await performSearch(query, collection, topK, cfg, { hybrid, rerank });
+
+  if (jsonOut) {
+    console.log(JSON.stringify(results, null, 2));
+    return;
+  }
+
+  printResults(results);
+}
+
+// ── Agentic RAG ───────────────────────────────────────────────────────────────
+
+/**
+ * Decompose a question into 2-3 targeted sub-queries using gpt-4o-mini.
+ */
+async function decomposeQuery(question, openaiKey) {
+  if (!openaiKey) return [question];
+
+  try {
+    const oai = getOpenAI(openaiKey);
+    const res = await oai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a search query decomposer. Given a question about a codebase, output 2-3 targeted search queries as a JSON array. Example: ["stripe webhook handler", "subscription status update", "billing error handling"]. Output ONLY valid JSON array, nothing else.',
+        },
+        { role: 'user', content: question },
+      ],
+      temperature: 0.2,
+      max_tokens: 200,
+    });
+
+    const text = res.choices[0]?.message?.content?.trim() || '';
+    // Parse JSON array from response
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+      const queries = JSON.parse(match[0]);
+      if (Array.isArray(queries) && queries.length > 0) {
+        return queries.map(q => String(q)).filter(q => q.length > 0);
+      }
+    }
+  } catch (err) {
+    process.stderr.write(`⚠️  Query decomposition failed: ${err.message}\n`);
+  }
+
+  return [question];
+}
+
+async function cmdRagAsk(args) {
+  const cfg = requireConfig();
+
+  const get = (flag) => {
+    const i = args.indexOf(flag);
+    return i !== -1 && args[i + 1] ? args[i + 1] : null;
+  };
+
+  const topK       = parseInt(get('--top') || '5', 10);
+  const collection = get('--collection') || 'codebase';
+  const jsonOut    = args.includes('--json');
+
+  const question = args.filter((a, i) => {
+    if (a.startsWith('--')) return false;
+    if (i > 0 && ['--top', '--collection'].includes(args[i - 1])) return false;
+    return true;
+  }).join(' ');
+
+  if (!question) {
+    console.error('Usage: af rag ask "<question>" --collection <name> [--top N] [--json]');
+    process.exit(1);
+  }
+
+  console.error(`🧠 Decomposing question into sub-queries...`);
+  const subQueries = await decomposeQuery(question, cfg.openaiKey);
+
+  console.error(`🔍 Running ${subQueries.length} sub-queries in parallel:`);
+  for (const q of subQueries) {
+    console.error(`   • ${q}`);
+  }
+
+  // Run all sub-queries in parallel
+  const allResults = await Promise.all(
+    subQueries.map(q => performSearch(q, collection, topK * 2, cfg).catch(err => {
+      console.error(`⚠️  Sub-query failed "${q}": ${err.message}`);
+      return [];
+    }))
+  );
+
+  // Deduplicate by file+lines, keep highest score
+  const seen = new Map();
+  for (const results of allResults) {
+    for (const r of results) {
+      const key = `${r.file}:${r.lines}`;
+      if (!seen.has(key) || seen.get(key).score < r.score) {
+        seen.set(key, r);
+      }
+    }
+  }
+
+  // Sort by score descending, take top N
+  const merged = Array.from(seen.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+
+  console.error(`\n✅ Found ${merged.length} unique results from ${subQueries.length} sub-queries\n`);
+
+  if (jsonOut) {
+    console.log(JSON.stringify({ question, subQueries, results: merged }, null, 2));
+    return;
+  }
+
+  printResults(merged);
 }
 
 async function cmdCollections() {
@@ -525,6 +812,7 @@ Usage: af <group|command> [subcommand] [options]
 
 Auth:
   af auth login    --qdrant <URL> --openai-key <KEY>   Save credentials
+                   [--cohere-key <KEY>]                 Cohere API key for reranking
   af auth whoami                                        Show current config
 
 Indexing:
@@ -532,25 +820,37 @@ Indexing:
                [--collection <name>]  [--provider openai|ollama]
 
 RAG Search:
-  af rag search      <query> --collection <name>       Semantic search
+  af rag search   <query> --collection <name>          Semantic search
+                  [--top N]                             Number of results (default: 5)
+                  [--hybrid]                            Hybrid search (dense + BM25 sparse)
+                  [--rerank]                            Rerank with Cohere (requires --cohere-key)
+                  [--json]                              Output as JSON
+
+  af rag ask      "<question>" --collection <name>     Agentic RAG (multi-query decomposition)
+                  [--top N]                             Number of results (default: 5)
+                  [--json]                              Output as JSON
+
   af rag collections                                   List indexed collections
-  af rag delete      --collection <name>               Delete a collection
+  af rag delete   --collection <name>                  Delete a collection
 
 Install:
   npm install -g Art-of-Technology/agent-factory
 
 Examples:
-  af auth login --qdrant http://10.34.9.237:6333 --openai-key sk-...
+  af auth login --qdrant http://10.34.9.237:6333 --openai-key sk-... --cohere-key co-...
   af auth whoami
   af index --path https://github.com/Art-of-Technology/maestro-fraud
   af index --path /home/user/myproject --collection myproject
   af rag search "how is risk score calculated" --collection maestro-fraud
-  af rag search "stripe webhook" --collection openclaw --top 10 --json
+  af rag search "stripe webhook" --collection openclaw --top 10 --hybrid --rerank
+  af rag search "payment handler" --collection myapp --json
+  af rag ask "how does billing work" --collection myapp --top 5
   af rag collections
 `;
 
 const ragCommands = {
   search:      cmdSearch,
+  ask:         cmdRagAsk,
   collections: cmdCollections,
   delete:      cmdDelete,
 };

@@ -1,0 +1,33 @@
+# PROJECT.md — Project Context
+
+## Repository
+- **Repo**: {REPO}
+- **Default branch**: {BRANCH}
+- **GitHub Project**: {GITHUB_PROJECT}
+
+## Tech Stack
+- **Framework**: {FRAMEWORK}
+- **ORM**: {ORM}
+- **Database**: {DATABASE}
+- **Auth**: {AUTH}
+- **Package Manager**: {PACKAGE_MANAGER}
+- **Infra**: {INFRA}
+
+## Commands
+- **Install**: {INSTALL_CMD}
+- **Dev**: {DEV_CMD}
+- **Build**: {BUILD_CMD}
+- **Test**: {TEST_CMD}
+- **Lint**: {LINT_CMD}
+- **DB Migrate**: {MIGRATE_CMD}
+
+## Key Paths
+- **API routes**: {API_ROUTES_PATH}
+- **DB schema**: {SCHEMA_PATH}
+- **Components**: {COMPONENTS_PATH}
+
+## Team
+{TEAM_ROSTER}
+
+## Current Schema (Key Models)
+{SCHEMA_HIGHLIGHTS}

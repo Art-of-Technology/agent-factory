@@ -13,17 +13,29 @@ import OpenAI from 'openai';
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 const COLLECTION = process.env.COLLECTION || 'maestro-fraud';
-const EMBEDDING_MODEL = 'text-embedding-3-small';
+const PROVIDER = process.env.EMBEDDING_PROVIDER || 'openai';
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'nomic-embed-text';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-large';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = PROVIDER === 'openai' ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+
+async function getQueryEmbedding(text) {
+  if (PROVIDER === 'ollama') {
+    const res = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: text }),
+    });
+    const data = await res.json();
+    return data.embedding;
+  }
+  const response = await openai.embeddings.create({ model: OPENAI_MODEL, input: text });
+  return response.data[0].embedding;
+}
 
 async function search(query, topK = 5) {
-  // Get query embedding
-  const response = await openai.embeddings.create({
-    model: EMBEDDING_MODEL,
-    input: query,
-  });
-  const queryVector = response.data[0].embedding;
+  const queryVector = await getQueryEmbedding(query);
 
   // Search Qdrant
   const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/points/search`, {

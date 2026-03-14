@@ -15,11 +15,14 @@ import OpenAI from 'openai';
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 const REPO_PATH = process.env.REPO_PATH || '.';
 const COLLECTION = process.env.COLLECTION || 'maestro-fraud';
-const EMBEDDING_MODEL = 'text-embedding-3-small';
-const BATCH_SIZE = 50; // Embeddings per batch
-const VECTOR_SIZE = 1536;
+const PROVIDER = process.env.EMBEDDING_PROVIDER || 'openai'; // 'openai' or 'ollama'
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'nomic-embed-text';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-large';
+const BATCH_SIZE = PROVIDER === 'ollama' ? 10 : 50; // Ollama = sequential, smaller batches
+const VECTOR_SIZE = PROVIDER === 'ollama' ? 768 : 3072; // nomic=768, large=3072
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = PROVIDER === 'openai' ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
 // File extensions to index
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.sql', '.md']);
@@ -152,13 +155,31 @@ async function createCollection() {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /**
+ * Get embeddings from Ollama (sequential per text)
+ */
+async function getOllamaEmbeddings(texts) {
+  const embeddings = [];
+  for (const text of texts) {
+    const res = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt: text.substring(0, 8000) }),
+    });
+    if (!res.ok) throw new Error(`Ollama error: ${await res.text()}`);
+    const data = await res.json();
+    embeddings.push(data.embedding);
+  }
+  return embeddings;
+}
+
+/**
  * Get embeddings from OpenAI with retry
  */
-async function getEmbeddings(texts, retries = 3) {
+async function getOpenAIEmbeddings(texts, retries = 3) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const response = await openai.embeddings.create({
-        model: EMBEDDING_MODEL,
+        model: OPENAI_MODEL,
         input: texts,
       });
       return response.data.map(d => d.embedding);
@@ -169,6 +190,13 @@ async function getEmbeddings(texts, retries = 3) {
       await sleep(wait);
     }
   }
+}
+
+/**
+ * Get embeddings (provider-agnostic)
+ */
+async function getEmbeddings(texts) {
+  return PROVIDER === 'ollama' ? getOllamaEmbeddings(texts) : getOpenAIEmbeddings(texts);
 }
 
 /**
@@ -187,6 +215,7 @@ async function upsertPoints(points) {
  * Main indexing pipeline
  */
 async function main() {
+  console.log(`🔧 Provider: ${PROVIDER} | Model: ${PROVIDER === 'ollama' ? OLLAMA_MODEL : OPENAI_MODEL} | Dims: ${VECTOR_SIZE}`);
   console.log(`📂 Scanning: ${REPO_PATH}`);
   const files = walkDir(REPO_PATH);
   console.log(`📄 Found ${files.length} files to index\n`);

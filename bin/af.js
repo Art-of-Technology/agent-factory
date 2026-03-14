@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * codebase-rag CLI
+ * af — Agent Factory CLI
  *
  * Semantic code search for AI agents.
  * Index any git repository into Qdrant and query it with natural language.
@@ -18,7 +18,7 @@ import { join, relative, extname } from 'path';
 import { homedir } from 'os';
 import OpenAI from 'openai';
 
-const CONFIG_DIR  = join(homedir(), '.codebase-rag');
+const CONFIG_DIR  = join(homedir(), '.af');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ function saveConfig(cfg) {
 function requireConfig() {
   const cfg = loadConfig();
   if (!cfg?.qdrant) {
-    console.error('Not configured. Run: codebase-rag config --qdrant <URL> --openai-key <KEY>');
+    console.error('Not configured. Run: af rag config --qdrant <URL> --openai-key <KEY>');
     process.exit(1);
   }
   return cfg;
@@ -72,7 +72,7 @@ async function embed(texts, cfg) {
   }
 
   if (!cfg.openaiKey) {
-    console.error('OpenAI key not set. Run: codebase-rag config --openai-key <KEY>');
+    console.error('OpenAI key not set. Run: af rag config --openai-key <KEY>');
     process.exit(1);
   }
   const response = await getOpenAI(cfg.openaiKey).embeddings.create({ model, input: texts });
@@ -193,7 +193,7 @@ async function cmdConfig(args) {
     const cfg = loadConfig();
     if (!cfg) {
       console.log('Not configured yet.');
-      console.log('Usage: codebase-rag config --qdrant <URL> --openai-key <KEY>');
+      console.log('Usage: af rag config --qdrant <URL> --openai-key <KEY>');
     } else {
       console.log('Current config:');
       console.log(`  Qdrant URL:    ${cfg.qdrant}`);
@@ -341,7 +341,7 @@ async function cmdSearch(args) {
   }).join(' ');
 
   if (!query) {
-    console.error('Usage: codebase-rag search <query> [--collection <name>] [--top N] [--json]');
+    console.error('Usage: af rag search <query> [--collection <name>] [--top N] [--json]');
     process.exit(1);
   }
 
@@ -397,7 +397,7 @@ async function cmdDelete(args) {
   const colIdx = args.indexOf('--collection');
   const collection = colIdx !== -1 && args[colIdx + 1] ? args[colIdx + 1] : null;
   if (!collection) {
-    console.error('Usage: codebase-rag delete --collection <name>');
+    console.error('Usage: af rag delete --collection <name>');
     process.exit(1);
   }
   const cfg = requireConfig();
@@ -407,54 +407,77 @@ async function cmdDelete(args) {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-const args    = process.argv.slice(2);
-const command = args[0];
-const cmdArgs = args.slice(1);
+const args   = process.argv.slice(2);
+const group  = args[0];   // e.g. "rag"
+const cmd    = args[1];   // e.g. "search"
+const cmdArgs = args.slice(2);
 
 const HELP = `
-codebase-rag — Semantic code search for AI agents
+af — Agent Factory CLI
 
-Setup:
-  config --qdrant <URL> --openai-key <KEY>       Save connection settings
-  config                                          Show current config
+Usage: af <group> <command> [options]
 
-Commands:
-  index    --repo <path> --collection <name>      Index a repository
-             [--provider openai|ollama]
-             [--batch <n>]
-  search   <query> --collection <name>            Semantic search
-             [--top <n>]  [--json]
-  collections                                     List all indexed collections
-  delete   --collection <name>                    Delete a collection
+Groups:
+  rag    Semantic code search (Qdrant + OpenAI/Ollama)
 
-Examples:
-  codebase-rag config --qdrant http://10.34.9.237:6333 --openai-key sk-...
-  codebase-rag index --repo /home/user/myproject --collection myproject
-  codebase-rag search "how is auth handled" --collection myproject
-  codebase-rag search "risk score calculation" --collection maestro-fraud --top 10
-  codebase-rag collections
-  codebase-rag delete --collection old-project
+Run 'af rag --help' for rag commands.
+
+Install:
+  npm install -g Art-of-Technology/agent-factory
 `;
 
-if (!command || command === '--help' || command === '-h') {
+const RAG_HELP = `
+af rag — Semantic code search for AI agents
+
+Setup:
+  af rag config --qdrant <URL> --openai-key <KEY>    Save connection settings
+  af rag config                                       Show current config
+
+Commands:
+  af rag index    --repo <path> --collection <name>   Index a repository
+                    [--provider openai|ollama]
+                    [--batch <n>]
+  af rag search   <query> --collection <name>         Semantic search
+                    [--top <n>]  [--json]
+  af rag collections                                  List indexed collections
+  af rag delete   --collection <name>                 Delete a collection
+
+Examples:
+  af rag config --qdrant http://10.34.9.237:6333 --openai-key sk-...
+  af rag index --repo /home/user/myproject --collection myproject
+  af rag search "how is auth handled" --collection myproject --top 10
+  af rag search "stripe webhook" --collection openclaw --json
+  af rag collections
+  af rag delete --collection old-project
+`;
+
+const ragCommands = {
+  config:      cmdConfig,
+  index:       cmdIndex,
+  search:      cmdSearch,
+  collections: cmdCollections,
+  delete:      cmdDelete,
+};
+
+if (!group || group === '--help' || group === '-h') {
   console.log(HELP);
-} else {
-  const commands = {
-    config:      cmdConfig,
-    index:       cmdIndex,
-    search:      cmdSearch,
-    collections: cmdCollections,
-    delete:      cmdDelete,
-  };
-  const handler = commands[command];
-  if (!handler) {
-    console.error(`Unknown command: ${command}\nRun 'codebase-rag --help' for usage.`);
-    process.exitCode = 1;
+} else if (group === 'rag') {
+  if (!cmd || cmd === '--help' || cmd === '-h') {
+    console.log(RAG_HELP);
   } else {
-    try { await handler(cmdArgs); }
-    catch (err) {
-      console.error(`Error: ${err.message}`);
+    const handler = ragCommands[cmd];
+    if (!handler) {
+      console.error(`Unknown rag command: ${cmd}\nRun 'af rag --help' for usage.`);
       process.exitCode = 1;
+    } else {
+      try { await handler(cmdArgs); }
+      catch (err) {
+        console.error(`Error: ${err.message}`);
+        process.exitCode = 1;
+      }
     }
   }
+} else {
+  console.error(`Unknown group: ${group}\nRun 'af --help' for usage.`);
+  process.exitCode = 1;
 }

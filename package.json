@@ -1,0 +1,25 @@
+{
+  "name": "af-cli",
+  "version": "1.0.0",
+  "description": "Agent Factory CLI — semantic code search and agent tooling",
+  "type": "module",
+  "bin": {
+    "af": "./bin/af.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node bin/af.js --help"
+  },
+  "keywords": ["rag", "semantic-search", "agent-factory", "ai", "agents", "qdrant"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "openai": "^4.0.0"
+  }
+}

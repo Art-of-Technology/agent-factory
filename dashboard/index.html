@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🤖 Agent Dashboard</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --accent:    #58a6ff;
+      --green:     #3fb950;
+      --yellow:    #d29922;
+      --red:       #f85149;
+      --purple:    #bc8cff;
+      --text:      #c9d1d9;
+      --muted:     #8b949e;
+      --desk-bg:   #1c2128;
+      --desk-top:  #2d333b;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Press Start 2P', 'Courier New', monospace;
+      font-size: 10px;
+      overflow-x: hidden;
+    }
+
+    /* ── Layout ───────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      padding: 12px;
+      gap: 12px;
+    }
+
+    /* ── Header ───────────────────────────────────────────── */
+    #header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #header h1 {
+      font-size: 11px;
+      color: var(--accent);
+      letter-spacing: 1px;
+      text-shadow: 0 0 8px var(--accent);
+    }
+    #header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    #repo-label {
+      color: var(--muted);
+      font-size: 8px;
+    }
+    #last-updated {
+      color: var(--green);
+      font-size: 8px;
+    }
+    #refresh-btn {
+      background: var(--accent);
+      color: #000;
+      border: none;
+      padding: 5px 10px;
+      font-family: inherit;
+      font-size: 8px;
+      cursor: pointer;
+      border-radius: 2px;
+      transition: opacity .15s;
+    }
+    #refresh-btn:hover { opacity: .8; }
+    #refresh-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Office Grid ──────────────────────────────────────── */
+    #office {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
+    @media (max-width: 900px) {
+      #office { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 600px) {
+      #office { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* ── Desk Card ────────────────────────────────────────── */
+    .desk {
+      background: var(--desk-bg);
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 8px 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      position: relative;
+      transition: border-color .3s;
+    }
+    .desk.state-working  { border-color: var(--accent); }
+    .desk.state-reviewing{ border-color: var(--yellow); }
+    .desk.state-waiting  { border-color: var(--purple); }
+    .desk.state-done     { border-color: var(--green); }
+    .desk.state-idle     { border-color: var(--border); }
+
+    /* State indicator dot */
+    .desk::after {
+      content: '';
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+    .desk.state-working::after  { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+    .desk.state-reviewing::after{ background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+    .desk.state-waiting::after  { background: var(--purple); }
+    .desk.state-done::after     { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .desk.state-idle::after     { background: var(--muted); }
+
+    /* Desk surface */
+    .desk-surface {
+      width: 100%;
+      height: 6px;
+      background: var(--desk-top);
+      border-radius: 2px;
+      margin-bottom: 2px;
+    }
+
+    /* Character sprite */
+    .character {
+      font-size: 32px;
+      line-height: 1;
+      position: relative;
+      display: inline-block;
+      cursor: default;
+      user-select: none;
+    }
+
+    /* State animations */
+    .state-working  .character { animation: bounce 0.5s ease-in-out infinite alternate; }
+    .state-reviewing .character{ animation: pulse  1.5s ease-in-out infinite; }
+    .state-waiting  .character { animation: sway   2s   ease-in-out infinite; }
+    .state-done     .character { animation: jump   0.6s ease-in-out infinite alternate; }
+    .state-idle     .character { animation: bob    3s   ease-in-out infinite; }
+
+    @keyframes bounce {
+      from { transform: translateY(0); }
+      to   { transform: translateY(-6px); }
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1);    opacity: 1; }
+      50%       { transform: scale(1.12); opacity: .8; }
+    }
+    @keyframes sway {
+      0%, 100% { transform: rotate(-4deg); }
+      50%       { transform: rotate( 4deg); }
+    }
+    @keyframes jump {
+      from { transform: translateY(0)   scale(1); }
+      to   { transform: translateY(-10px) scale(1.1); }
+    }
+    @keyframes bob {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-3px); }
+    }
+
+    /* Speech bubble */
+    .speech-bubble {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 4px 6px;
+      font-size: 7px;
+      color: var(--text);
+      text-align: center;
+      line-height: 1.5;
+      max-width: 100%;
+      min-height: 24px;
+      word-break: break-word;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .speech-bubble::before {
+      content: '';
+      position: absolute;
+      top: -6px;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 3px solid transparent;
+      border-bottom-color: var(--border);
+    }
+
+    /* Agent name + role */
+    .agent-name {
+      font-size: 8px;
+      color: var(--accent);
+      text-align: center;
+      letter-spacing: .5px;
+    }
+    .agent-role {
+      font-size: 7px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    /* State badge */
+    .state-badge {
+      font-size: 7px;
+      padding: 2px 5px;
+      border-radius: 2px;
+      background: var(--desk-top);
+      color: var(--muted);
+    }
+    .state-working   .state-badge { background: rgba(88,166,255,.15); color: var(--accent); }
+    .state-reviewing .state-badge { background: rgba(210,153,34,.15);  color: var(--yellow); }
+    .state-waiting   .state-badge { background: rgba(188,140,255,.15); color: var(--purple); }
+    .state-done      .state-badge { background: rgba(63,185,80,.15);   color: var(--green); }
+
+    /* ── Activity Log ─────────────────────────────────────── */
+    #activity-panel {
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 4px;
+      padding: 10px;
+    }
+    #activity-panel h2 {
+      font-size: 9px;
+      color: var(--accent);
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 6px;
+    }
+    #activity-log {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 180px;
+      overflow-y: auto;
+    }
+    .log-entry {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+      font-size: 7px;
+      padding: 3px 4px;
+      border-radius: 2px;
+      background: var(--desk-bg);
+    }
+    .log-time  { color: var(--muted); flex-shrink: 0; }
+    .log-agent { color: var(--accent); flex-shrink: 0; min-width: 80px; }
+    .log-msg   { color: var(--text); word-break: break-word; }
+    .log-entry.new { animation: flash .4s ease; }
+    @keyframes flash {
+      0%   { background: rgba(88,166,255,.2); }
+      100% { background: var(--desk-bg); }
+    }
+
+    /* ── Footer ───────────────────────────────────────────── */
+    #footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 7px;
+      padding: 4px;
+    }
+
+    /* ── Scrollbar ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Loading shimmer ──────────────────────────────────── */
+    .loading .character { opacity: .4; }
+    .loading .speech-bubble { color: var(--muted); }
+
+    /* ── Rate limit warning ───────────────────────────────── */
+    #rate-warning {
+      display: none;
+      background: rgba(248,81,73,.1);
+      border: 1px solid var(--red);
+      border-radius: 3px;
+      padding: 6px 10px;
+      font-size: 8px;
+      color: var(--red);
+      text-align: center;
+    }
+    #rate-warning.visible { display: block; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <h1>🤖 AGENT DASHBOARD</h1>
+    <div id="header-right">
+      <span id="repo-label">Loading…</span>
+      <span id="last-updated">never synced</span>
+      <button id="refresh-btn" onclick="manualRefresh()">⟳ REFRESH</button>
+    </div>
+  </div>
+
+  <div id="rate-warning">⚠ GitHub API rate limit reached — add a token via ?token=ghp_xxx or wait before next poll</div>
+
+  <!-- Office grid -->
+  <div id="office"></div>
+
+  <!-- Activity Log -->
+  <div id="activity-panel">
+    <h2>📋 ACTIVITY LOG</h2>
+    <div id="activity-log">
+      <div class="log-entry"><span class="log-time">--:--:--</span><span class="log-agent">SYSTEM</span><span class="log-msg">Initialising dashboard…</span></div>
+    </div>
+  </div>
+
+  <div id="footer">AGENT DASHBOARD v1.0 · pixel art · github issues</div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   CONFIG — edit here or pass ?repo=owner/repo&token=ghp_xxx
+   ═══════════════════════════════════════════════════════════ */
+const CONFIG = {
+  repo:         'Art-of-Technology/openclaw-team-provisioner',
+  githubToken:  '',          // optional — higher rate limits
+  pollInterval: 30_000,      // ms between polls
+  agents: [
+    { id: 'po',          name: 'Product Owner',   emoji: '👔', labels: ['epic', 'user-story', 'po'] },
+    { id: 'pm',          name: 'Project Manager', emoji: '📋', labels: ['task', 'pm'] },
+    { id: 'architect',   name: 'Architect',       emoji: '🏛️', labels: ['needs-architecture', 'architecture', 'architect'] },
+    { id: 'senior-dev',  name: 'Senior Dev',      emoji: '💻', labels: ['ready-for-dev', 'in-progress', 'senior-dev'] },
+    { id: 'ui',          name: 'UI Designer',     emoji: '🎨', labels: ['ui', 'design', 'frontend'] },
+    { id: 'db',          name: 'DB Engineer',     emoji: '🗄️', labels: ['db-design', 'database', 'db'] },
+    { id: 'qa',          name: 'QA Tester',       emoji: '🧪', labels: ['needs-test', 'testing', 'qa'] },
+    { id: 'security',    name: 'Security',        emoji: '🔒', labels: ['security', 'auth'] },
+    { id: 'api',         name: 'API Reviewer',    emoji: '🔌', labels: ['api', 'api-review'] },
+    { id: 'cicd',        name: 'CI/CD',           emoji: '⚙️', labels: ['ci', 'cd', 'cicd', 'devops'] },
+    { id: 'code-review', name: 'Code Review',     emoji: '👁️', labels: ['needs-review', 'pr-open', 'code-review'] },
+    { id: 'infra',       name: 'Infra',           emoji: '🏗️', labels: ['infra', 'infrastructure', 'ops'] },
+  ]
+};
+
+/* ── URL param overrides ─────────────────────────────────── */
+{
+  const p = new URLSearchParams(location.search);
+  if (p.get('repo'))  CONFIG.repo         = p.get('repo');
+  if (p.get('token')) CONFIG.githubToken  = p.get('token');
+  if (p.get('poll'))  CONFIG.pollInterval = Number(p.get('poll')) * 1000;
+}
+
+/* ── State ───────────────────────────────────────────────── */
+const agentState  = {};  // id → { state, issue, updated }
+const activityLog = [];
+let   pollTimer   = null;
+let   firstLoad   = true;
+
+/* ── State helpers ───────────────────────────────────────── */
+const STATE = {
+  WORKING:   'working',
+  REVIEWING: 'reviewing',
+  WAITING:   'waiting',
+  DONE:      'done',
+  IDLE:      'idle',
+};
+
+const STATE_META = {
+  working:   { icon: '💻', label: 'IN PROGRESS', cssClass: 'state-working' },
+  reviewing: { icon: '👀', label: 'REVIEWING',   cssClass: 'state-reviewing' },
+  waiting:   { icon: '⏳', label: 'WAITING',     cssClass: 'state-waiting' },
+  done:      { icon: '✅', label: 'DONE',        cssClass: 'state-done' },
+  idle:      { icon: '💤', label: 'IDLE',        cssClass: 'state-idle' },
+};
+
+function labelToState(labels) {
+  const s = new Set(labels.map(l => l.name.toLowerCase()));
+  if (s.has('in-progress') || s.has('wip'))                        return STATE.WORKING;
+  if (s.has('needs-review') || s.has('pr-open') || s.has('review')) return STATE.REVIEWING;
+  if (s.has('done') || s.has('merged') || s.has('closed'))         return STATE.DONE;
+  if (s.size > 0)                                                   return STATE.WAITING;
+  return STATE.IDLE;
+}
+
+function agentLabelsMatch(agentLabels, issueLabels) {
+  const issueSet = new Set(issueLabels.map(l => l.name.toLowerCase()));
+  return agentLabels.some(al => issueSet.has(al.toLowerCase()));
+}
+
+/* ── DOM helpers ─────────────────────────────────────────── */
+function fmt(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function logActivity(agentId, msg) {
+  const agent = CONFIG.agents.find(a => a.id === agentId);
+  const entry = { time: Date.now(), agentId, agentName: agent ? agent.name : agentId, msg };
+  activityLog.unshift(entry);
+  if (activityLog.length > 10) activityLog.pop();
+  renderLog();
+}
+
+function renderLog() {
+  const el = document.getElementById('activity-log');
+  el.innerHTML = activityLog.map((e, i) => `
+    <div class="log-entry${i === 0 ? ' new' : ''}">
+      <span class="log-time">${fmt(e.time)}</span>
+      <span class="log-agent">${e.agentName.toUpperCase()}</span>
+      <span class="log-msg">${escHtml(e.msg)}</span>
+    </div>
+  `).join('') || '<div class="log-entry"><span class="log-msg" style="color:var(--muted)">No events yet…</span></div>';
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ── Build initial office grid ───────────────────────────── */
+function buildGrid() {
+  const office = document.getElementById('office');
+  office.innerHTML = CONFIG.agents.map(agent => `
+    <div class="desk state-idle loading" id="desk-${agent.id}">
+      <div class="desk-surface"></div>
+      <div class="character" title="${agent.name}">${agent.emoji}</div>
+      <div class="agent-name">${agent.name.toUpperCase()}</div>
+      <div class="agent-role">${agent.id.toUpperCase()}</div>
+      <div class="state-badge">💤 IDLE</div>
+      <div class="speech-bubble" id="bubble-${agent.id}">waiting for data…</div>
+    </div>
+  `).join('');
+}
+
+/* ── Update a single desk ────────────────────────────────── */
+function updateDesk(agent, state, issue) {
+  const desk   = document.getElementById('desk-' + agent.id);
+  if (!desk) return;
+
+  const prev   = agentState[agent.id] || {};
+  const meta   = STATE_META[state];
+  const changed = prev.state !== state || prev.issueId !== (issue && issue.number);
+
+  // Remove old state classes
+  desk.className = 'desk ' + meta.cssClass;
+
+  // State badge
+  desk.querySelector('.state-badge').textContent = `${meta.icon} ${meta.label}`;
+
+  // Speech bubble
+  const bubble = document.getElementById('bubble-' + agent.id);
+  if (issue) {
+    bubble.textContent = `#${issue.number}: ${issue.title}`;
+    bubble.title       = issue.title;
+  } else {
+    const idle_msgs = ['chilling…', 'coffee break ☕', 'on standby', 'no tasks'];
+    bubble.textContent = idle_msgs[Math.floor(Math.random() * idle_msgs.length)];
+  }
+
+  // Log change
+  if (changed && !firstLoad) {
+    const issueInfo = issue ? `#${issue.number}: ${issue.title.slice(0,40)}…` : 'no active issue';
+    logActivity(agent.id, `${meta.icon} ${meta.label} — ${issueInfo}`);
+  }
+
+  agentState[agent.id] = { state, issueId: issue ? issue.number : null };
+}
+
+/* ── GitHub API ──────────────────────────────────────────── */
+async function fetchIssues() {
+  const headers = { 'Accept': 'application/vnd.github+json' };
+  if (CONFIG.githubToken) headers['Authorization'] = `Bearer ${CONFIG.githubToken}`;
+
+  const url = `https://api.github.com/repos/${CONFIG.repo}/issues?state=open&per_page=100`;
+  const res = await fetch(url, { headers });
+
+  if (res.status === 403 || res.status === 429) {
+    document.getElementById('rate-warning').classList.add('visible');
+    throw new Error('Rate limited');
+  }
+  document.getElementById('rate-warning').classList.remove('visible');
+
+  if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+  return res.json();
+}
+
+/* ── Assign issues to agents ─────────────────────────────── */
+function assignIssuesToAgents(issues) {
+  // Build map: agentId → best matching open issue
+  const assignments = {};
+
+  for (const agent of CONFIG.agents) {
+    let bestIssue = null;
+    let bestScore = -1;
+
+    for (const issue of issues) {
+      if (issue.pull_request) continue; // skip PRs
+      const matchCount = agent.labels.filter(al =>
+        issue.labels.some(il => il.name.toLowerCase() === al.toLowerCase())
+      ).length;
+
+      if (matchCount > bestScore) {
+        bestScore = matchCount;
+        bestIssue = issue;
+      }
+    }
+
+    if (bestScore > 0) {
+      assignments[agent.id] = bestIssue;
+    } else {
+      assignments[agent.id] = null;
+    }
+  }
+
+  return assignments;
+}
+
+/* ── Main poll cycle ─────────────────────────────────────── */
+async function poll() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = '⟳ SYNCING…';
+
+  try {
+    const issues      = await fetchIssues();
+    const assignments = assignIssuesToAgents(issues);
+
+    for (const agent of CONFIG.agents) {
+      const issue  = assignments[agent.id];
+      const state  = issue ? labelToState(issue.labels) : STATE.IDLE;
+      updateDesk(agent, state, issue);
+    }
+
+    // Remove loading shimmer
+    document.querySelectorAll('.desk.loading').forEach(d => d.classList.remove('loading'));
+    firstLoad = false;
+
+    document.getElementById('last-updated').textContent = `synced ${fmt(Date.now())}`;
+    document.getElementById('repo-label').textContent   = `📦 ${CONFIG.repo}`;
+
+    if (activityLog.length === 0 || activityLog[0].agentId === 'SYSTEM') {
+      logActivity('SYSTEM', `Loaded ${issues.length} open issues from ${CONFIG.repo}`);
+    }
+
+  } catch (err) {
+    console.error('Poll error:', err);
+    document.getElementById('last-updated').textContent = `⚠ error ${fmt(Date.now())}`;
+    logActivity('SYSTEM', `Poll error: ${err.message}`);
+  }
+
+  btn.disabled = false;
+  btn.textContent = '⟳ REFRESH';
+}
+
+function manualRefresh() {
+  clearTimeout(pollTimer);
+  poll().then(schedulePoll);
+}
+
+function schedulePoll() {
+  pollTimer = setTimeout(() => poll().then(schedulePoll), CONFIG.pollInterval);
+}
+
+/* ── Init ────────────────────────────────────────────────── */
+buildGrid();
+// Seed log
+logActivity('SYSTEM', 'Dashboard started — polling GitHub Issues API…');
+poll().then(schedulePoll);
+</script>
+</body>
+</html>

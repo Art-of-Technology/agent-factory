@@ -32,10 +32,14 @@ node indexer.js
 **Environment Variables:**
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | (required) | OpenAI API key for embeddings |
+| `OPENAI_API_KEY` | (required for openai) | OpenAI API key for embeddings |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant REST API URL |
 | `REPO_PATH` | `.` | Path to repository to index |
-| `COLLECTION` | `maestro-fraud` | Qdrant collection name |
+| `COLLECTION` | `codebase` | Qdrant collection name |
+| `EMBEDDING_PROVIDER` | `openai` | `openai` or `ollama` |
+| `OPENAI_MODEL` | `text-embedding-3-large` | OpenAI embedding model |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API URL |
+| `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model |
 
 ### Search
 

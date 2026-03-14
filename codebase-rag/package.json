@@ -1,11 +1,25 @@
 {
   "name": "codebase-rag",
-  "version": "1.0.0",
-  "description": "Codebase RAG indexer + search for agent-factory",
+  "version": "1.1.0",
+  "description": "Semantic code search for AI agents — index any repo into Qdrant, query with natural language",
   "type": "module",
+  "bin": {
+    "codebase-rag": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "index": "node indexer.js",
-    "search": "node search.js"
+    "index":  "node indexer.js",
+    "search": "node search.js",
+    "test":   "node bin/cli.js --help"
+  },
+  "keywords": ["rag", "semantic-search", "codebase", "ai", "agents", "qdrant", "openai"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "openai": "^4.0.0"

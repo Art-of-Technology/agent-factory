@@ -1,0 +1,13 @@
+{
+  "name": "codebase-rag",
+  "version": "1.0.0",
+  "description": "Codebase RAG indexer + search for agent-factory",
+  "type": "module",
+  "scripts": {
+    "index": "node indexer.js",
+    "search": "node search.js"
+  },
+  "dependencies": {
+    "openai": "^4.0.0"
+  }
+}

@@ -120,17 +120,60 @@ See [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md) for detailed troubleshooting:
 5. Don't spawn 3+ agents simultaneously — gateway overload
 6. Prisma client needs rebuild after schema changes
 
+## 🔍 Codebase RAG (Vector Search)
+
+Agents need context to write good code. Codebase RAG gives them semantic search over your entire repository.
+
+### Architecture
+```
+Your Repo → Indexer (chunk + embed) → Qdrant → Agent queries → Relevant code chunks
+```
+
+### Stack
+- **Qdrant** — Self-hosted vector DB (Docker)
+- **OpenAI** `text-embedding-3-small` — 1536-dim embeddings
+- **Ollama** `nomic-embed-text` — Free local alternative (GPU recommended)
+
+### Quick Start
+```bash
+# Start Qdrant
+docker run -d --name qdrant -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant:latest
+
+# Index your repo
+cd codebase-rag && npm install
+OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo COLLECTION=my-repo node indexer.js
+
+# Search
+node search.js "how does authentication work"
+```
+
+### How It Works
+1. **Walk** — Scans `.ts`, `.tsx`, `.js`, `.jsx`, `.sql`, `.md` files
+2. **Chunk** — Splits at function/class boundaries (small files stay whole)
+3. **Embed** — OpenAI `text-embedding-3-small` (batched, with retry + rate limiting)
+4. **Index** — Upserts into Qdrant with file path, line numbers, chunk type metadata
+5. **Search** — Query embedding → cosine similarity → top-K relevant chunks
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed setup instructions.
+
 ## 🤝 Contributing
 
-This is an evolving system. Improvements welcome:
-- Better agent prompts (reduce hallucination)
-- Smarter orchestrator (dependency resolution)
-- Webhook-based board sync (vs polling)
-- Agent performance metrics
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Setting up the development environment
+- Codebase RAG setup and testing
+- Agent template guidelines
+- Code style and PR process
+
+### Areas We Need Help
+- 🧠 Better agent prompts (reduce hallucination)
+- 🔍 Improved code chunking strategies
+- 🌐 More embedding providers (Ollama, Cohere, local models)
+- 📚 Deployment guides and tutorials
+- 🤖 New agent templates (ML engineer, DevOps, etc.)
 
 ## 📄 License
 
-MIT
+[MIT](LICENSE) — Art of Technology, 2026
 
 ---
 

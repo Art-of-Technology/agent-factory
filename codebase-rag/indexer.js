@@ -19,9 +19,10 @@
  *   COLLECTION          - Qdrant collection name (default: codebase)
  * 
  * Usage:
- *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js          # full reindex
- *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js --incremental  # changed files only
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js                    # full reindex
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js --incremental      # changed files only
  *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js -i --since HEAD~3  # last 3 commits
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js --force-recreate   # drop + full rebuild
  *   EMBEDDING_PROVIDER=ollama OLLAMA_URL=http://gpu:11434 node indexer.js
  */
 
@@ -32,6 +33,7 @@ import OpenAI from 'openai';
 
 // --- CLI flags ---
 const INCREMENTAL = process.argv.includes('--incremental') || process.argv.includes('-i');
+const FORCE_RECREATE = process.argv.includes('--force-recreate') || process.argv.includes('-f');
 const DIFF_BASE = (() => {
   const idx = process.argv.indexOf('--since');
   return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : 'HEAD~1';
@@ -432,7 +434,11 @@ async function main() {
   // --- Incremental vs Full mode ---
   let files;
   
-  if (INCREMENTAL) {
+  if (FORCE_RECREATE) {
+    console.log('🔥 Force recreate mode — dropping and rebuilding entire index\n');
+  }
+  
+  if (INCREMENTAL && !FORCE_RECREATE) {
     console.log(`🔄 Incremental mode (since ${DIFF_BASE})\n`);
     
     // Ensure collection exists (don't recreate)

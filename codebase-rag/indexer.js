@@ -19,13 +19,23 @@
  *   COLLECTION          - Qdrant collection name (default: codebase)
  * 
  * Usage:
- *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js          # full reindex
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js --incremental  # changed files only
+ *   OPENAI_API_KEY=sk-... REPO_PATH=/path/to/repo node indexer.js -i --since HEAD~3  # last 3 commits
  *   EMBEDDING_PROVIDER=ollama OLLAMA_URL=http://gpu:11434 node indexer.js
  */
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { join, relative, extname } from 'path';
+import { execSync } from 'child_process';
 import OpenAI from 'openai';
+
+// --- CLI flags ---
+const INCREMENTAL = process.argv.includes('--incremental') || process.argv.includes('-i');
+const DIFF_BASE = (() => {
+  const idx = process.argv.indexOf('--since');
+  return idx !== -1 && process.argv[idx + 1] ? process.argv[idx + 1] : 'HEAD~1';
+})();
 
 // --- Configuration (all from environment) ---
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
@@ -289,6 +299,104 @@ async function getEmbeddings(texts) {
   return PROVIDER === 'ollama' ? getOllamaEmbeddings(texts) : getOpenAIEmbeddings(texts);
 }
 
+// --- Incremental indexing ---
+
+/**
+ * Get changed files since a git ref using git diff.
+ * Returns files that were Added, Modified, or Renamed (not Deleted).
+ */
+function getChangedFiles(repoPath, sinceRef) {
+  try {
+    const output = execSync(
+      `git diff --name-only --diff-filter=AMR ${sinceRef}`,
+      { cwd: repoPath, encoding: 'utf8', timeout: 10000 }
+    ).trim();
+    if (!output) return [];
+    return output.split('\n').filter(f => {
+      const ext = extname(f);
+      return CODE_EXTENSIONS.has(ext) && !SKIP_FILES.has(f.split('/').pop());
+    });
+  } catch (e) {
+    console.warn(`⚠️  git diff failed: ${e.message}`);
+    console.warn('   Falling back to full reindex');
+    return null; // null = fallback to full
+  }
+}
+
+/**
+ * Get files that were deleted since a git ref.
+ */
+function getDeletedFiles(repoPath, sinceRef) {
+  try {
+    const output = execSync(
+      `git diff --name-only --diff-filter=D ${sinceRef}`,
+      { cwd: repoPath, encoding: 'utf8', timeout: 10000 }
+    ).trim();
+    if (!output) return [];
+    return output.split('\n');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Delete points from Qdrant by file_path filter.
+ */
+async function deletePointsByFiles(filePaths) {
+  if (filePaths.length === 0) return 0;
+  
+  let deleted = 0;
+  for (const filePath of filePaths) {
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    try {
+      const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/points/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filter: {
+            must: [{ key: 'file_path', match: { value: normalizedPath } }]
+          }
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) deleted++;
+    } catch (e) {
+      console.warn(`  ⚠️  Failed to delete points for ${filePath}: ${e.message}`);
+    }
+  }
+  return deleted;
+}
+
+/**
+ * Ensure collection exists (for incremental mode — don't delete it).
+ */
+async function ensureCollection() {
+  const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}`);
+  if (res.ok) {
+    const data = await res.json();
+    console.log(`✅ Collection "${COLLECTION}" exists (${data.result?.points_count ?? '?'} points)\n`);
+    return true;
+  }
+  // Collection doesn't exist — create it
+  console.log(`📦 Collection "${COLLECTION}" not found, creating...`);
+  await createCollection();
+  return false;
+}
+
+/**
+ * Get next available point ID (max existing + 1).
+ */
+async function getNextPointId() {
+  try {
+    const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}`);
+    if (!res.ok) return 1;
+    const data = await res.json();
+    return (data.result?.points_count ?? 0) + 1000; // offset to avoid collisions
+  } catch {
+    return 1;
+  }
+}
+
 // --- Main pipeline ---
 
 async function main() {
@@ -321,20 +429,61 @@ async function main() {
     }
   }
 
-  // Scan files
-  const files = walkDir(REPO_PATH);
-  if (files.length === 0) {
-    console.error('❌ No indexable files found. Check REPO_PATH and file extensions.');
-    process.exit(1);
-  }
-  console.log(`📄 Found ${files.length} files to index`);
+  // --- Incremental vs Full mode ---
+  let files;
+  
+  if (INCREMENTAL) {
+    console.log(`🔄 Incremental mode (since ${DIFF_BASE})\n`);
+    
+    // Ensure collection exists (don't recreate)
+    await ensureCollection();
+    
+    // Get changed + deleted files
+    const changedRelative = getChangedFiles(REPO_PATH, DIFF_BASE);
+    const deletedRelative = getDeletedFiles(REPO_PATH, DIFF_BASE);
+    
+    if (changedRelative === null) {
+      // git diff failed — fall back to full
+      console.log('⚠️  Falling back to full reindex\n');
+      files = walkDir(REPO_PATH);
+      await createCollection();
+    } else if (changedRelative.length === 0 && deletedRelative.length === 0) {
+      console.log('✅ No changes detected. Index is up to date.');
+      process.exit(0);
+    } else {
+      // Delete old points for changed + deleted files
+      const allAffected = [...new Set([...changedRelative, ...deletedRelative])];
+      console.log(`📝 Changed: ${changedRelative.length} files, Deleted: ${deletedRelative.length} files`);
+      const deleted = await deletePointsByFiles(allAffected);
+      console.log(`🗑️  Removed ${deleted} file entries from index`);
+      
+      // Only index changed files (not deleted ones)
+      files = changedRelative
+        .map(rel => ({ path: join(REPO_PATH, rel), relative: rel }))
+        .filter(f => existsSync(f.path));
+      
+      if (files.length === 0) {
+        console.log('✅ Only deletions — index updated.');
+        process.exit(0);
+      }
+      console.log(`📄 Re-indexing ${files.length} changed files`);
+    }
+  } else {
+    // Full mode
+    files = walkDir(REPO_PATH);
+    if (files.length === 0) {
+      console.error('❌ No indexable files found. Check REPO_PATH and file extensions.');
+      process.exit(1);
+    }
+    console.log(`📄 Found ${files.length} files to index`);
 
-  // Create collection
-  await createCollection();
+    // Create collection (deletes old one)
+    await createCollection();
+  }
 
   // Build chunks
   let totalChunks = 0;
-  let pointId = 1;
+  let pointId = INCREMENTAL ? await getNextPointId() : 1;
   const batch = [];
   let skippedFiles = 0;
 

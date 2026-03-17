@@ -211,14 +211,34 @@ for (let i = 0; i < args.length; i++) {
     }
     i++;
   } else if (args[i] === '--help' || args[i] === '-h') {
-    console.log('Usage: node search.js [--top N] "your query"');
-    console.log('');
-    console.log('Options:');
-    console.log('  --top, -n N    Number of results (default: 5)');
-    console.log('  --help, -h     Show this help');
-    console.log('');
-    console.log('Environment:');
-    console.log('  OPENAI_API_KEY, QDRANT_URL, COLLECTION, EMBEDDING_PROVIDER');
+    console.log(`Codebase RAG Search — Semantic code search with optional Cohere reranking
+
+Usage: node search.js [options] "your query"
+
+Options:
+  --top, -n N      Number of results (default: 5)
+  --no-rerank      Skip Cohere reranking (vector-only)
+  --help, -h       Show this help
+
+Config (via .env or environment):
+  OPENAI_API_KEY        OpenAI API key (required for openai provider)
+  COHERE_API_KEY        Cohere API key (enables reranking)
+  QDRANT_URL            Qdrant server (default: http://localhost:6333)
+  COLLECTION            Collection name (default: codebase)
+  EMBEDDING_PROVIDER    openai | ollama (default: openai)
+  COHERE_RERANK_MODEL   Rerank model (default: rerank-v3.5)
+
+Setup:
+  node config.js set OPENAI_API_KEY sk-proj-...
+  node config.js set COHERE_API_KEY xxxx
+  node config.js set COLLECTION maestro-connect
+  node config.js list
+
+Examples:
+  node search.js "how is risk score calculated"
+  node search.js --top 10 "OAuth token validation"
+  node search.js --no-rerank "detection orchestrator"
+`);
     process.exit(0);
   } else {
     query += (query ? ' ' : '') + args[i];

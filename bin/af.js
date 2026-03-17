@@ -812,18 +812,28 @@ Usage: af <group|command> [subcommand] [options]
 
 Auth:
   af auth login    --qdrant <URL> --openai-key <KEY>   Save credentials
-                   [--cohere-key <KEY>]                 Cohere API key for reranking
+                   [--cohere-key <KEY>]                  Cohere API key for reranking
   af auth whoami                                        Show current config
 
+Config:
+  af config set <key> <value>                           Set a config value
+  af config get <key>                                   Get a config value
+  af config list                                        List all config
+  af config delete <key>                                Remove a config value
+
 Indexing:
-  af index   --path <local-path|github-url>            Index a repository
+  af index   --path <local-path|github-url>            Index a repository (full reindex)
                [--collection <name>]  [--provider openai|ollama]
+  af index   --path <path> --incremental               Index only changed files (git diff)
+               [--since <ref>]                           Diff base (default: HEAD~1)
+  af index   --path <path> --force-recreate            Drop collection + full rebuild
 
 RAG Search:
   af rag search   <query> --collection <name>          Semantic search
                   [--top N]                             Number of results (default: 5)
                   [--hybrid]                            Hybrid search (dense + BM25 sparse)
                   [--rerank]                            Rerank with Cohere (requires --cohere-key)
+                  [--no-rerank]                         Skip reranking (even if key is set)
                   [--json]                              Output as JSON
 
   af rag ask      "<question>" --collection <name>     Agentic RAG (multi-query decomposition)
@@ -839,11 +849,16 @@ Install:
 Examples:
   af auth login --qdrant http://10.34.9.237:6333 --openai-key sk-... --cohere-key co-...
   af auth whoami
+  af config set COHERE_API_KEY co-xxxxx
+  af config list
   af index --path https://github.com/Art-of-Technology/maestro-fraud
   af index --path /home/user/myproject --collection myproject
+  af index --path ./myproject --incremental --collection myproject
+  af index --path ./myproject -i --since HEAD~3 --collection myproject
+  af index --path ./myproject --force-recreate --collection myproject
   af rag search "how is risk score calculated" --collection maestro-fraud
   af rag search "stripe webhook" --collection openclaw --top 10 --hybrid --rerank
-  af rag search "payment handler" --collection myapp --json
+  af rag search "payment handler" --collection myapp --json --no-rerank
   af rag ask "how does billing work" --collection myapp --top 5
   af rag collections
 `;
@@ -862,6 +877,38 @@ const authCommands = {
 
 if (!group || group === '--help' || group === '-h') {
   console.log(HELP);
+} else if (group === 'config') {
+  // af config set/get/list/delete — delegate to existing cmdConfig with adapted args
+  const subCmd = cmd; // set, get, list, delete
+  if (subCmd === 'set' && cmdArgs[0] && cmdArgs[1]) {
+    // Map to auth login style: save to config file
+    const cfg = loadConfig() || {};
+    cfg[cmdArgs[0]] = cmdArgs[1];
+    saveConfig(cfg);
+    const display = cmdArgs[1].length > 10 ? cmdArgs[1].slice(0, 6) + '...' : cmdArgs[1];
+    console.log(`✅ ${cmdArgs[0]} = ${display}`);
+  } else if (subCmd === 'get' && cmdArgs[0]) {
+    const cfg = loadConfig() || {};
+    const val = cfg[cmdArgs[0]];
+    console.log(val ? `${cmdArgs[0]} = ${String(val).length > 10 ? String(val).slice(0, 6) + '...' : val}` : `${cmdArgs[0]} is not set`);
+  } else if (subCmd === 'delete' && cmdArgs[0]) {
+    const cfg = loadConfig() || {};
+    delete cfg[cmdArgs[0]];
+    saveConfig(cfg);
+    console.log(`🗑️  ${cmdArgs[0]} removed`);
+  } else if (subCmd === 'list' || !subCmd) {
+    const cfg = loadConfig();
+    if (!cfg) { console.log('Not configured. Run: af auth login ...'); }
+    else {
+      const secrets = ['openaiKey', 'cohereKey', 'geminiKey'];
+      for (const [k, v] of Object.entries(cfg)) {
+        const display = secrets.includes(k) && String(v).length > 10 ? String(v).slice(0, 6) + '...' : v;
+        console.log(`  ${k} = ${display}`);
+      }
+    }
+  } else {
+    console.log('Usage: af config set|get|list|delete <key> [value]');
+  }
 } else if (group === 'auth') {
   const handler = authCommands[cmd];
   if (!handler) {

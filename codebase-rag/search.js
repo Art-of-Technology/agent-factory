@@ -45,6 +45,8 @@ const PROVIDER = process.env.EMBEDDING_PROVIDER || 'openai';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'nomic-embed-text';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'text-embedding-3-large';
+let COHERE_API_KEY = process.env.COHERE_API_KEY || '';
+const RERANK_MODEL = process.env.COHERE_RERANK_MODEL || 'rerank-v3.5';
 
 let openai = null;
 function getOpenAIClient() {
@@ -90,6 +92,44 @@ async function getQueryEmbedding(text) {
 }
 
 /**
+ * Rerank results using Cohere Rerank API.
+ * @param {string} query
+ * @param {Array} results - search results with .content
+ * @param {number} topN - number of results to return
+ * @returns {Promise<Array>} reranked results
+ */
+async function cohereRerank(query, results, topN) {
+  const res = await fetch('https://api.cohere.com/v2/rerank', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${COHERE_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: RERANK_MODEL,
+      query,
+      documents: results.map(r => `${r.file} (L${r.lines})\n${r.content}`),
+      top_n: topN,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => 'unknown');
+    console.error(`⚠️  Cohere rerank failed (HTTP ${res.status}): ${body}`);
+    return null; // fallback to original order
+  }
+
+  const data = await res.json();
+  return data.results.map(r => ({
+    ...results[r.index],
+    relevanceScore: r.relevance_score,
+    originalScore: results[r.index].score,
+    score: r.relevance_score, // override score with rerank score
+  }));
+}
+
+/**
  * Search the Qdrant collection.
  * @param {string} query
  * @param {number} topK
@@ -113,12 +153,15 @@ async function search(query, topK = 5) {
 
   const queryVector = await getQueryEmbedding(query);
 
+  // Fetch more results when reranking (3x for better recall)
+  const fetchLimit = COHERE_API_KEY ? Math.max(topK * 3, 20) : topK;
+
   const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/points/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       vector: queryVector,
-      limit: topK,
+      limit: fetchLimit,
       with_payload: true,
     }),
     signal: AbortSignal.timeout(10000),
@@ -131,22 +174,36 @@ async function search(query, topK = 5) {
 
   const data = await res.json();
 
-  return data.result.map(hit => ({
+  let results = data.result.map(hit => ({
     score: hit.score,
     file: hit.payload.file_path,
     lines: `${hit.payload.start_line}-${hit.payload.end_line}`,
     type: hit.payload.chunk_type,
     content: hit.payload.content,
   }));
+
+  // Cohere rerank if available
+  if (COHERE_API_KEY && results.length > 0) {
+    const reranked = await cohereRerank(query, results, topK);
+    if (reranked) {
+      return reranked;
+    }
+    // fallback: return original top K
+  }
+
+  return results.slice(0, topK);
 }
 
 // --- CLI ---
 const args = process.argv.slice(2);
 let topK = 5;
+let noRerank = false;
 let query = '';
 
 for (let i = 0; i < args.length; i++) {
-  if ((args[i] === '--top' || args[i] === '-n') && args[i + 1]) {
+  if (args[i] === '--no-rerank') {
+    noRerank = true;
+  } else if ((args[i] === '--top' || args[i] === '-n') && args[i + 1]) {
     topK = parseInt(args[i + 1], 10);
     if (isNaN(topK) || topK < 1) {
       console.error('❌ --top must be a positive integer');
@@ -174,9 +231,12 @@ if (!query) {
   process.exit(1);
 }
 
-console.log(`🔍 Searching: "${query}" (top ${topK}) [${PROVIDER}/${PROVIDER === 'ollama' ? OLLAMA_MODEL : OPENAI_MODEL}]\n`);
+const useRerank = COHERE_API_KEY && !noRerank;
+const rerankInfo = useRerank ? ` + Cohere ${RERANK_MODEL}` : '';
+console.log(`🔍 Searching: "${query}" (top ${topK}) [${PROVIDER}/${PROVIDER === 'ollama' ? OLLAMA_MODEL : OPENAI_MODEL}${rerankInfo}]\n`);
 
 try {
+  if (noRerank) COHERE_API_KEY = ''; // disable rerank for this run
   const results = await search(query, topK);
 
   if (results.length === 0) {
@@ -185,7 +245,10 @@ try {
   }
 
   for (const r of results) {
-    console.log(`━━━ ${r.file} (L${r.lines}) [${r.type}] score: ${r.score.toFixed(3)} ━━━`);
+    const scoreStr = r.relevanceScore != null 
+      ? `relevance: ${r.relevanceScore.toFixed(3)} (vector: ${r.originalScore.toFixed(3)})`
+      : `score: ${r.score.toFixed(3)}`;
+    console.log(`━━━ ${r.file} (L${r.lines}) [${r.type}] ${scoreStr} ━━━`);
     const lines = r.content.split('\n').slice(0, 12);
     console.log(lines.join('\n'));
     if (r.content.split('\n').length > 12) console.log('  ...');
